@@ -17,7 +17,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-// compile with: gcc pegh.c -lcrypto -O3 -o pegh
+/* compile with: cc pegh.c -lcrypto -O3 -o pegh */
 
 #include <openssl/conf.h>
 #include <openssl/evp.h>
@@ -37,21 +37,21 @@
 #define SCRYPT_N 32768
 #define SCRYPT_R 8
 #define SCRYPT_P 1
-#define SCRYPT_MAX_MEM (1024 * 1024 * 64) // 64mb, must be sufficient for N
+#define SCRYPT_MAX_MEM (1024 * 1024 * 64) /* 64mb, must be sufficient for N */
 
-// tweak initial read buffer size/reads here
-#define BYTES_PER_READ (1024 * 32) // 32kb
-#define INITIAL_BUFFER_SIZE (1024 * 256) // 256kb, must be at least 2*BYTES_PER_READ
+/* tweak initial read buffer size/reads here */
+#define BYTES_PER_READ (1024 * 32) /* 32kb */
+#define INITIAL_BUFFER_SIZE (1024 * 256) /* 256kb, must be at least 2*BYTES_PER_READ */
 
-// don't touch below here unless you know what you are doing
+/* don't touch below here unless you know what you are doing */
 
-#define KEY_LEN 32 // 256 bit key required for AES-256
+#define KEY_LEN 32 /* 256 bit key required for AES-256 */
 
-// 1 for file format version, 4 for N, 1 for r, 1 for p
+/* 1 for file format version, 4 for N, 1 for r, 1 for p */
 #define PRE_SALT_LEN 7
-// from libsodium's crypto_pwhash_scryptsalsa208sha256_SALTBYTES
+/* from libsodium's crypto_pwhash_scryptsalsa208sha256_SALTBYTES */
 #define SALT_LEN 32
-// AES-GCM should only ever have an IV_LEN of 12
+/* AES-GCM should only ever have an IV_LEN of 12 */
 #define IV_LEN 12
 #define GCM_TAG_LEN 16
 
@@ -194,7 +194,7 @@ int main(int argc, char **argv)
 {
     unsigned char key[KEY_LEN] = {0};
     /* these are actually mallocd and freed */
-    unsigned char *in_buffer, *out_buffer;
+    unsigned char *in_buffer, *out_buffer = NULL;
     /* these are simply pointers into the above */
     unsigned char *salt, *iv, *ciphertext, *plaintext, *tag;
     int exit_code = 2, decrypt = 1;
@@ -208,7 +208,7 @@ int main(int argc, char **argv)
         return exit_code;
     }
 
-    // this means we want to encrypt, not decrypt
+    /* this means we want to encrypt, not decrypt */
     if (argc > 2 && strcmp("enc", argv[2]) == 0)
         decrypt = 0;
 
@@ -268,7 +268,7 @@ int main(int argc, char **argv)
             out_buffer[5] = r;
             out_buffer[6] = p;
             salt = out_buffer + PRE_SALT_LEN;
-            // generate random salt
+            /* generate random salt+iv */
             if (RAND_bytes(salt, SALT_IV_LEN) <= 0) {
                 fprintf(stderr, "random salt+iv generation error\n");
                 exit_code = 1;
@@ -311,7 +311,7 @@ int main(int argc, char **argv)
                 break;
             }
         }
-        // success!
+        /* success! */
         fwrite(out_buffer, 1, out_buffer_len, stdout);
         exit_code = 0;
     } while(0);
