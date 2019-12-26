@@ -37,13 +37,15 @@
 #define SCRYPT_N 32768
 #define SCRYPT_R 8
 #define SCRYPT_P 1
-#define SCRYPT_MAX_MEM (1024 * 1024 * 64) /* 64mb, must be sufficient for N */
+#define SCRYPT_MAX_MEM_MB 64
 
 /* tweak initial read buffer size/reads here */
 #define BYTES_PER_READ (1024 * 32) /* 32kb */
 #define INITIAL_BUFFER_SIZE (1024 * 256) /* 256kb, must be at least 2*BYTES_PER_READ */
 
 /* don't touch below here unless you know what you are doing */
+
+#define PEGH_VERSION "1.0.0"
 
 #define KEY_LEN 32 /* 256 bit key required for AES-256 */
 
@@ -190,27 +192,17 @@ int gcm_decrypt(unsigned char *ciphertext, size_t ciphertext_len,
 }
 
 /* returns 0 on success, 1 on openssl failure, 2 on other failure */
-int main(int argc, char **argv)
+int pegh(char *password, int decrypt,
+         uint32_t scrypt_max_mem_mb, uint32_t N,
+         uint8_t r, uint8_t p)
 {
     unsigned char key[KEY_LEN] = {0};
     /* these are actually mallocd and freed */
     unsigned char *in_buffer, *out_buffer = NULL;
     /* these are simply pointers into the above */
     unsigned char *salt, *iv, *ciphertext, *plaintext, *tag;
-    int exit_code = 2, decrypt = 1;
+    int exit_code = 2;
     size_t read, in_buffer_len = 0, out_buffer_len, in_buffer_allocd_size = INITIAL_BUFFER_SIZE;
-
-    uint32_t N = SCRYPT_N;
-    uint8_t r = SCRYPT_R, p = SCRYPT_P;
-
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <key> [enc]\n", argv[0]);
-        return exit_code;
-    }
-
-    /* this means we want to encrypt, not decrypt */
-    if (argc > 2 && strcmp("enc", argv[2]) == 0)
-        decrypt = 0;
 
     in_buffer = malloc(in_buffer_allocd_size);
     if(!in_buffer) {
@@ -282,10 +274,10 @@ int main(int argc, char **argv)
 
         /* https://commondatastorage.googleapis.com/chromium-boringssl-docs/evp.h.html#EVP_PBE_scrypt */
         if (EVP_PBE_scrypt(
-            argv[1], strlen(argv[1]),
+            password, strlen(password),
             salt, SALT_LEN,
             (uint64_t) N, (uint64_t) r, (uint64_t) p,
-            SCRYPT_MAX_MEM,
+            (uint64_t) scrypt_max_mem_mb * 1024 * 1024,
             key, KEY_LEN
         ) <= 0) {
             fprintf(stderr, "scrypt key derivation error\n");
@@ -326,4 +318,151 @@ int main(int argc, char **argv)
         ERR_print_errors_fp(stderr);
 
     return exit_code;
+}
+
+int help(int exit_code) {
+    /* this ridiculous split is because C89 only supports strings of 509 characters */
+    fprintf(stderr, "\
+usage: pegh [-demNrphV] password\n\
+ -d            decrypt stdin to stdout, default mode\n\
+ -e            encrypt stdin to stdout\n\
+ -m <max_mb>   maximum megabytes of ram to use when deriving key from password\n\
+               with scrypt, applies for encryption AND decryption, must\n\
+               almost linearly scale with -N, if too low operation will fail,\n\
+               default: %d\n", SCRYPT_MAX_MEM_MB);
+    fprintf(stderr, "\
+ -N <num>      scrypt parameter N, only applies for encryption, default %d\n\
+               this is rounded up to the next highest power of 2\n\
+ -r <num>      scrypt parameter r, only applies for encryption, default %d\n\
+ -p <num>      scrypt parameter p, only applies for encryption, default %d\n\
+ -s <num>      multiplication factor to apply to both -N and -m for easy\n\
+               work scaling, rounded up to the next highest power of 2,\n\
+               default: 1\n", SCRYPT_N, SCRYPT_R, SCRYPT_P);
+    fprintf(stderr, "\
+ -h            print this usage text\n\
+ -V            show version number and format version support then quit\n\
+\nFor additional info on scrypt params refer to:\n\
+    https://blog.filippo.io/the-scrypt-parameters/\n\
+    https://tools.ietf.org/html/rfc7914#section-2\n\n");
+    exit(exit_code);
+    return exit_code;
+}
+
+uint32_t parse_int_arg(int optind, int argc, char **argv) {
+    uint32_t tmp = 0;
+
+    if(optind >= argc) {
+        fprintf(stderr, "Error: %s requires an argument\n", argv[optind - 1]);
+        return help(2);
+    }
+    errno = 0;
+    tmp = strtoul(argv[optind], NULL, 10);
+    if(errno != 0 || tmp < 1) {
+        fprintf(stderr, "Error: %s %s failed to parse as a number\n", argv[optind - 1], argv[optind]);
+        return help(2);
+    }
+    return tmp;
+}
+
+uint8_t parse_byte_arg(int optind, int argc, char **argv) {
+    uint32_t tmp;
+
+    tmp = parse_int_arg(optind, argc, argv);
+    if(tmp > 255) {
+        fprintf(stderr, "Error: %s %s failed to parse as a number 1-255\n", argv[optind - 1], argv[optind]);
+        return help(2);
+    }
+    return (uint8_t) tmp;
+}
+
+uint32_t next_highest_power_of_2(uint32_t v) {
+    --v;
+    v |= v >> 1;
+    v |= v >> 2;
+    v |= v >> 4;
+    v |= v >> 8;
+    v |= v >> 16;
+    return ++v;
+}
+
+/* returns 0 on success, 1 on openssl failure, 2 on other failure */
+int main(int argc, char **argv)
+{
+    int optind, decrypt = 1;
+    char *password = NULL;
+    uint32_t N = SCRYPT_N, scrypt_max_mem_mb = SCRYPT_MAX_MEM_MB, scale = 1;
+    uint8_t r = SCRYPT_R, p = SCRYPT_P;
+
+    for (optind = 1; optind < argc; ++optind) {
+        if(strlen(argv[optind]) == 2 && argv[optind][0] == '-') {
+
+            /* -- means stop parsing options */
+            if(argv[optind][1] == '-') {
+                ++optind;
+                break;
+            }
+
+            switch (argv[optind][1]) {
+            case 'e':
+                decrypt = 0;
+                break;
+            case 'd':
+                decrypt = 1;
+                break;
+            case 'm':
+                scrypt_max_mem_mb = parse_int_arg(++optind, argc, argv);
+                break;
+            case 'N':
+                N = next_highest_power_of_2(parse_int_arg(++optind, argc, argv));
+                break;
+            case 's':
+                scale = next_highest_power_of_2(parse_int_arg(++optind, argc, argv));
+                break;
+            case 'r':
+                r = parse_byte_arg(++optind, argc, argv);
+                break;
+            case 'p':
+                p = parse_byte_arg(++optind, argc, argv);
+                break;
+            case 'V':
+                fprintf(stderr, "pegh %s\nformat versions supported: 0\n", PEGH_VERSION);
+                return 0;
+            case 'h':
+                return help(0);
+            default:
+                fprintf(stderr, "Error: invalid option %s\n", argv[optind]);
+                return help(2);
+            }
+        } else if (password == NULL) {
+            password = argv[optind];
+        } else {
+            fprintf (stderr, "Error: more than one password provided\n");
+            return help(2);
+        }
+    }
+
+    if(password == NULL) {
+        if(argc == optind) {
+            fprintf (stderr, "Error: no password provided\n");
+            return help(2);
+        }
+
+        if((argc - optind) != 1) {
+            fprintf (stderr, "Error: more than one password provided\n");
+            return help(2);
+        }
+        password = argv[optind];
+    }
+
+    /* apply scale */
+    N *= scale;
+    scrypt_max_mem_mb *= scale;
+
+    /*
+    fprintf (stderr, "decrypt = %d, key = %s, scrypt_max_mem_mb = %d, N = %d, r = %d, p = %d, scale = %d\n",
+            decrypt, password, scrypt_max_mem_mb, N, r, p, scale);
+    return 0;
+    */
+
+    return pegh(password, decrypt, scrypt_max_mem_mb, N, r, p);
 }

@@ -13,8 +13,8 @@ echo "key: $key"
 
 test () {
     bin=$1
-    tee >(md5sum 1>&2) < /dev/shm/randombytes | $bin $key enc | $bin $key | md5sum 1>&2
-    #$bin $key enc < /dev/shm/randombytes | $bin $key &>/dev/null
+    tee >(md5sum 1>&2) < /dev/shm/randombytes | $bin -e $key | $bin $key | md5sum 1>&2
+    #$bin -e $key < /dev/shm/randombytes | $bin $key &>/dev/null
 }
 
 time test ./pegh
