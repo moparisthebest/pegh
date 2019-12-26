@@ -14,6 +14,12 @@ pegh -e SUPER_SECRET_1942 <file.txt >file.txt.pegh
 
 # decrypt file.txt.pegh to file.txt with password SUPER_SECRET_1942
 pegh -d SUPER_SECRET_1942 <file.txt.pegh >file.txt
+
+# make enrypted backup
+tar czv -C /path/to/dir/ . | pegh SUPER_SECRET_1942 -o foo.tar.gz.pegh
+
+# extract encrypted backup
+pegh SUPER_SECRET_1942 -d -i foo.tar.gz.pegh | tar xzv
 ```
 
 The easiest way to scale cost/time it takes for bruteforcing is simply to continue doubling -s, on both encryption and decryption commands.
@@ -21,9 +27,18 @@ The easiest way to scale cost/time it takes for bruteforcing is simply to contin
 full help:
 ```
 $ pegh -h
-usage: pegh [-demNrpshV] password
- -e            encrypt stdin to stdout, default mode
- -d            decrypt stdin to stdout
+usage: pegh [options...] password
+ -e            encrypt input to output, default mode
+ -d            decrypt input to output
+ -i <filename> file to use for input, default stdin
+ -o <filename> file to use for output, if set and there is an error and append
+               is not set, we try to delete this file before exiting,
+               default stdout
+ -a            append to -o instead of truncate
+ -b <max_mb>   maximum megabytes of ram to use per read/write buffer, so while
+               decrypting/encrypting twice this will be used, but these are
+               only allocated after scrypt is finished so max usage will be
+               the highest of these only, not both combined, default: 16
  -m <max_mb>   maximum megabytes of ram to use when deriving key from password
                with scrypt, applies for encryption AND decryption, must
                almost linearly scale with -N, if too low operation will fail,
@@ -34,8 +49,10 @@ usage: pegh [-demNrpshV] password
  -p <num>      scrypt parameter p, only applies for encryption, default 1
  -s <num>      multiplication factor to apply to both -N and -m for easy
                work scaling, rounded up to the next highest power of 2,
+               BEWARE: -s 32 requires 2G ram, -s 64 requires 4G and so on,
                default: 1
  -h            print this usage text
+ -q            do not print error output to stderr
  -V            show version number and format version support then quit
 
 For additional info on scrypt params refer to:
@@ -63,4 +80,7 @@ Version 0, scrypt key derivation, aes-256-gcm encryption, 51 byte header, 16 byt
 
 License
 -------
-AGPLv3 for now, message me if you have a problem with this
+
+pegh.c: AGPLv3 for now, message me if you have a problem with this
+
+documentation/file format: consider this your choice of MIT, Apache 2, or public domain

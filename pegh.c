@@ -39,9 +39,8 @@
 #define SCRYPT_P 1
 #define SCRYPT_MAX_MEM_MB 64
 
-/* tweak initial read buffer size/reads here */
-#define BYTES_PER_READ (1024 * 32) /* 32kb */
-#define INITIAL_BUFFER_SIZE (1024 * 256) /* 256kb, must be at least 2*BYTES_PER_READ */
+/* tweak buffer sizes here, memory use will be twice this */
+#define BUFFER_SIZE_MB 16
 
 /*
  * pegh file format, numbers are inclusive 0-based byte array indices
@@ -68,7 +67,8 @@
 
 #define PEGH_VERSION "1.0.0"
 
-#define KEY_LEN 32 /* 256 bit key required for AES-256 */
+/* 256 bit key required for AES-256 */
+#define KEY_LEN 32
 
 /* 1 for file format version, 4 for N, 1 for r, 1 for p */
 #define PRE_SALT_LEN 7
@@ -80,31 +80,43 @@
 
 #define SALT_IV_LEN (SALT_LEN+IV_LEN)
 
-#define OVERHEAD_LEN (PRE_SALT_LEN+SALT_IV_LEN+GCM_TAG_LEN)
-
 /*
+ * reads buffer_size at a time from in, encrypts with AES-256-GCM, and writes them to out
+ *
  * returns 1 on success, 0 on failure
  *
- * these will be read from:
- * plaintext
- * plaintext_len
  * key must be length KEY_LEN
  * iv must be length IV_LEN
  *
- * these will be written into:
- * ciphertext must have the capacity of at least plaintext_len
- * tag must have the capacity of at least GCM_TAG_LEN
+ * buffer_size must be non-zero, this function will allocate this twice
+ * in/out must be set
+ * err can be NULL in which case no messages are printed
  */
-int gcm_encrypt(unsigned char *plaintext, size_t plaintext_len,
-                unsigned char *key,
-                unsigned char *iv,
-                unsigned char *ciphertext,
-                unsigned char *tag)
+int gcm_encrypt(const unsigned char *key, const unsigned char *iv, size_t buffer_size,
+                FILE *in, FILE *out, FILE *err
+)
 {
-    EVP_CIPHER_CTX *ctx;
-    int len, ret = 0;
+    /* these are actually mallocd and freed */
+    EVP_CIPHER_CTX *ctx = NULL;
+    unsigned char *plaintext = NULL, *ciphertext = NULL;
+
+    int exit_code = 0, ciphertext_written;
+    size_t plaintext_read;
 
     do {
+        plaintext = malloc(buffer_size);
+        if(!plaintext) {
+            if(NULL != err)
+                fprintf(err, "plaintext memory allocation failed\n");
+            break;
+        }
+        ciphertext = malloc(buffer_size);
+        if(!ciphertext) {
+            if(NULL != err)
+                fprintf(err, "ciphertext memory allocation failed\n");
+            break;
+        }
+
         /* Create and initialise the context */
         if(!(ctx = EVP_CIPHER_CTX_new()))
             break;
@@ -114,7 +126,7 @@ int gcm_encrypt(unsigned char *plaintext, size_t plaintext_len,
             break;
 
         /* Setting IV length is not necessary because the default of 12 bytes (96 bits) will be used
-        if(!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, IV_LEN, NULL))
+        if(1 != EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, IV_LEN, NULL))
             break;
         */
 
@@ -125,232 +137,312 @@ int gcm_encrypt(unsigned char *plaintext, size_t plaintext_len,
         /*
         * Provide the message to be encrypted, and obtain the encrypted output.
         * EVP_EncryptUpdate can be called multiple times if necessary
+        *
         */
-        if(1 != EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, plaintext_len))
-            break;
+        while ((plaintext_read = fread(plaintext, 1, buffer_size, in)) > 0) {
+
+            if(1 != EVP_EncryptUpdate(ctx, ciphertext, &ciphertext_written, plaintext, plaintext_read))
+                goto fail;
+
+            if(((size_t) ciphertext_written) != plaintext_read) {
+                if(NULL != err)
+                    fprintf(err, "ciphertext_written (%d) != plaintext_read (%lu)\n", ciphertext_written, (unsigned long) plaintext_read);
+                goto fail;
+            }
+
+            fwrite(ciphertext, 1, ciphertext_written, out);
+        }
 
         /*
         * Finalise the encryption. Normally ciphertext bytes may be written at
         * this stage, but this does not occur in GCM mode
         */
-        if(1 != EVP_EncryptFinal_ex(ctx, ciphertext + len, &len))
+        if(1 != EVP_EncryptFinal_ex(ctx, NULL, &ciphertext_written))
             break;
 
-        /* Get the tag */
-        ret = EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, GCM_TAG_LEN, tag);
-    } while(0);
+        /* Get the tag, go ahead and re-use ciphertext as it's not needed anymore */
+        if(1 != EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, GCM_TAG_LEN, ciphertext))
+            break;
 
-    /* Clean up */
+        fwrite(ciphertext, 1, GCM_TAG_LEN, out);
+
+        /* success! */
+        exit_code = 1;
+    } while(0);
+    fail:
+
+    if(plaintext)
+        free(plaintext);
+    if(ciphertext)
+        free(ciphertext);
+
     if(ctx)
         EVP_CIPHER_CTX_free(ctx);
 
-    return ret;
+    if(NULL != err && exit_code != 1) {
+        /* print openssl errors */
+        ERR_print_errors_fp(err);
+        fprintf(err, "encryption failed\n");
+    }
+
+    return exit_code;
 }
 
 /*
+ * reads buffer_size at a time from out, decrypts with AES-256-GCM, and writes them to out
+ *
+ * assumes the GCM authentication tag is the last 16 bytes and checks that too, it's the
+ * responsibility of the calling function to then go back in time and not use the invalid
+ * bytes already written to out...
+ *
  * returns 1 on success, 0 on failure
  *
- * these will be read from:
- * ciphertext
- * ciphertext_len
  * key must be length KEY_LEN
  * iv must be length IV_LEN
- * tag must be length GCM_TAG_LEN
  *
- * these will be written into:
- * plaintext must have the capacity of at least ciphertext_len
+ * buffer_size must be non-zero, this function will allocate this twice + 16 bytes for tag
+ * in/out must be set
+ * err can be NULL in which case no messages are printed
  */
-int gcm_decrypt(unsigned char *ciphertext, size_t ciphertext_len,
-                unsigned char *key,
-                unsigned char *iv,
-                unsigned char *tag,
-                unsigned char *plaintext)
+int gcm_decrypt(const unsigned char *key, const unsigned char *iv, size_t buffer_size,
+                FILE *in, FILE *out, FILE *err
+)
 {
-    EVP_CIPHER_CTX *ctx;
-    int len, ret = 0;
+    /* these are actually mallocd and freed */
+    EVP_CIPHER_CTX *ctx = NULL;
+    unsigned char *plaintext = NULL, *ciphertext = NULL;
+    /* these are simply pointers into ciphertext */
+    unsigned char *tag, *ciphertext_read_zone;
+
+    int exit_code = 0, plaintext_written;
+    size_t ciphertext_read;
 
     do {
+        plaintext = malloc(buffer_size);
+        if(!plaintext) {
+            if(NULL != err)
+                fprintf(err, "plaintext memory allocation failed\n");
+            break;
+        }
+        ciphertext = malloc(buffer_size + GCM_TAG_LEN);
+        if(!ciphertext) {
+            if(NULL != err)
+                fprintf(err, "ciphertext memory allocation failed\n");
+            break;
+        }
+
+        tag = ciphertext;
+        ciphertext_read_zone = ciphertext + GCM_TAG_LEN;
+
+        /* there must be *at least* 16 byte gcm tag / footer */
+        ciphertext_read = fread(tag, 1, GCM_TAG_LEN, in);
+        if(ciphertext_read != GCM_TAG_LEN) {
+            if(NULL != err)
+                fprintf(err, "File too small for decryption, no footer/tag?\n");
+            break;
+        }
+
         /* Create and initialise the context */
         if(!(ctx = EVP_CIPHER_CTX_new()))
             break;
 
         /* Initialise the decryption operation. */
-        if(!EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL))
+        if(1 != EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL))
             break;
 
         /* Setting IV length is not necessary because the default of 12 bytes (96 bits) will be used
-        if(!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, IV_LEN, NULL))
+        if(1 != EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, IV_LEN, NULL))
             break;
         */
 
         /* Initialise key and IV */
-        if(!EVP_DecryptInit_ex(ctx, NULL, NULL, key, iv))
+        if(1 != EVP_DecryptInit_ex(ctx, NULL, NULL, key, iv))
             break;
 
         /*
         * Provide the message to be decrypted, and obtain the plaintext output.
         * EVP_DecryptUpdate can be called multiple times if necessary
         */
-        if(!EVP_DecryptUpdate(ctx, plaintext, &len, ciphertext, ciphertext_len))
-            break;
+        do {
+            ciphertext_read = fread(ciphertext_read_zone, 1, buffer_size, in);
+
+            /* decrypt the bytes previously saved in tag plus ones currently read except the last 16 bytes */
+            if(1 != EVP_DecryptUpdate(ctx, plaintext, &plaintext_written, tag, ciphertext_read))
+                goto fail;
+            /* now save the unused last 16 bytes in tag */
+            memcpy(tag, ciphertext_read_zone + ciphertext_read - GCM_TAG_LEN, GCM_TAG_LEN);
+
+            if(((size_t) plaintext_written) != ciphertext_read) {
+                if(NULL != err)
+                    fprintf(err, "plaintext_written (%d) != plaintext_read (%lu)\n", plaintext_written, (unsigned long) ciphertext_read);
+                goto fail;
+            }
+
+            fwrite(plaintext, 1, plaintext_written, out);
+        } while(buffer_size == ciphertext_read);
+
 
         /* Set expected tag value. Works in OpenSSL 1.0.1d and later */
-        if(!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, tag))
+        if(1 != EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, ciphertext))
             break;
 
         /*
         * Finalise the decryption. A return value of 1 indicates success,
         * return value of 0 is a failure - the plaintext is not trustworthy.
         */
-        ret = EVP_DecryptFinal_ex(ctx, plaintext + len, &len);
-    } while(0);
+        if(1 != EVP_DecryptFinal_ex(ctx, NULL, &plaintext_written)) {
+            if(NULL != err)
+                fprintf(err, "integrity check failed\n");
+            break;
+        }
 
-    /* Clean up */
+        /* success! */
+        exit_code = 1;
+    } while(0);
+    fail:
+
+    if(plaintext)
+        free(plaintext);
+    if(ciphertext)
+        free(ciphertext);
+
     if(ctx)
         EVP_CIPHER_CTX_free(ctx);
 
-    return ret;
-}
-
-/* returns 0 on success, 1 on openssl failure, 2 on other failure */
-int pegh(char *password, int decrypt,
-         uint32_t scrypt_max_mem_mb, uint32_t N,
-         uint8_t r, uint8_t p)
-{
-    unsigned char key[KEY_LEN] = {0};
-    /* these are actually mallocd and freed */
-    unsigned char *in_buffer, *out_buffer = NULL;
-    /* these are simply pointers into the above */
-    unsigned char *salt, *iv, *ciphertext, *plaintext, *tag;
-    int exit_code = 2;
-    size_t read, in_buffer_len = 0, out_buffer_len, in_buffer_allocd_size = INITIAL_BUFFER_SIZE;
-
-    in_buffer = malloc(in_buffer_allocd_size);
-    if(!in_buffer) {
-        fprintf(stderr, "in_buffer memory allocation failed\n");
-        return exit_code;
+    if(NULL != err && exit_code != 1) {
+        /* print openssl errors */
+        ERR_print_errors_fp(err);
+        fprintf(err, "decryption failed\n");
     }
-
-    while ((read = fread(in_buffer + in_buffer_len, 1, BYTES_PER_READ, stdin)) > 0) {
-        in_buffer_len += read;
-        if ((in_buffer_len + BYTES_PER_READ) > in_buffer_allocd_size) {
-            in_buffer_allocd_size = in_buffer_allocd_size * 1.5;
-            in_buffer = realloc(in_buffer, in_buffer_allocd_size);
-            if(!in_buffer) {
-                fprintf(stderr, "in_buffer memory reallocation failed\n");
-                return exit_code;
-            }
-        }
-    }
-
-    do {
-        if (in_buffer_len <= (decrypt ? OVERHEAD_LEN : 0)) {
-            fprintf(stderr, "File too small for %scryption\n", decrypt ? "de" : "en");
-            break;
-        }
-
-        out_buffer_len = decrypt ? (in_buffer_len - OVERHEAD_LEN) : (in_buffer_len + OVERHEAD_LEN);
-        out_buffer = malloc(out_buffer_len);
-        if(!out_buffer) {
-            fprintf(stderr, "out_buffer memory allocation failed\n");
-            break;
-        }
-
-        if(decrypt) {
-            if(in_buffer[0] != 0) {
-                fprintf(stderr, "unsupported file format version %d, we only support version 0\n", in_buffer[0]);
-                break;
-            }
-            N = ((in_buffer[1] & 0xFF) << 24)
-                | ((in_buffer[2] & 0xFF) << 16)
-                | ((in_buffer[3] & 0xFF) << 8)
-                | (in_buffer[4] & 0xFF);
-            r = in_buffer[5];
-            p = in_buffer[6];
-            salt = in_buffer + PRE_SALT_LEN;
-            iv = salt + SALT_LEN;
-            ciphertext = iv + IV_LEN;
-            tag = ciphertext + out_buffer_len;
-            plaintext = out_buffer;
-        } else {
-            out_buffer[0] = 0;
-            out_buffer[1] = (N >> 24) & 0xFF;
-            out_buffer[2] = (N >> 16) & 0xFF;
-            out_buffer[3] = (N >> 8) & 0xFF;
-            out_buffer[4] = N & 0xFF;
-            out_buffer[5] = r;
-            out_buffer[6] = p;
-            salt = out_buffer + PRE_SALT_LEN;
-            /* generate random salt+iv */
-            if (RAND_bytes(salt, SALT_IV_LEN) <= 0) {
-                fprintf(stderr, "random salt+iv generation error\n");
-                exit_code = 1;
-                break;
-            }
-            iv = salt + SALT_LEN;
-            ciphertext = iv + IV_LEN;
-            tag = ciphertext + in_buffer_len;
-            plaintext = in_buffer;
-        }
-
-        /* https://commondatastorage.googleapis.com/chromium-boringssl-docs/evp.h.html#EVP_PBE_scrypt */
-        if (EVP_PBE_scrypt(
-            password, strlen(password),
-            salt, SALT_LEN,
-            (uint64_t) N, (uint64_t) r, (uint64_t) p,
-            (uint64_t) scrypt_max_mem_mb * 1024 * 1024,
-            key, KEY_LEN
-        ) <= 0) {
-            fprintf(stderr, "scrypt key derivation error\n");
-            exit_code = 1;
-            break;
-        }
-
-        if(decrypt) {
-            if (1 != gcm_decrypt(ciphertext, out_buffer_len,
-                                            key, iv,
-                                            tag,
-                                            plaintext)) {
-                fprintf(stderr, "integrity check failed\n");
-                exit_code = 1;
-                break;
-            }
-        } else {
-            if (1 != gcm_encrypt(plaintext, in_buffer_len,
-                                        key, iv,
-                                        ciphertext, tag)) {
-                fprintf(stderr, "encryption failed\n");
-                exit_code = 1;
-                break;
-            }
-        }
-        /* success! */
-        fwrite(out_buffer, 1, out_buffer_len, stdout);
-        exit_code = 0;
-    } while(0);
-
-    if(in_buffer)
-        free(in_buffer);
-    if(out_buffer)
-        free(out_buffer);
-
-    /* print openssl errors */
-    if(exit_code == 1)
-        ERR_print_errors_fp(stderr);
 
     return exit_code;
+}
+
+/* returns 1 on success, 0 on error */
+int scrypt_derive_key(char *password,
+         uint32_t scrypt_max_mem_mb, uint32_t N,
+         uint8_t r, uint8_t p, unsigned char *salt, unsigned char *key, FILE *err) {
+    /* derive key using salt, password, and scrypt parameters */
+    if (EVP_PBE_scrypt(
+        password, strlen(password),
+        salt, SALT_LEN,
+        (uint64_t) N, (uint64_t) r, (uint64_t) p,
+        (uint64_t) scrypt_max_mem_mb * 1024 * 1024,
+        key, KEY_LEN
+    ) <= 0) {
+        if(NULL != err) {
+            fprintf(err, "scrypt key derivation error\n");
+            ERR_print_errors_fp(err);
+        }
+        return 0;
+    }
+    return 1;
+}
+
+/* returns 1 on success, 0 on failure */
+int pegh_encrypt(char *password,
+         uint32_t scrypt_max_mem_mb, size_t buffer_size,
+         FILE *in, FILE *out, FILE *err,
+         uint32_t N, uint8_t r, uint8_t p)
+{
+    unsigned char key[KEY_LEN] = {0}, salt[SALT_IV_LEN] = {0};
+    /* this is simply a pointer into salt */
+    const unsigned char *iv = salt + SALT_LEN;
+
+    /* first write the version and parameters */
+    salt[0] = 0;
+    salt[1] = (N >> 24) & 0xFF;
+    salt[2] = (N >> 16) & 0xFF;
+    salt[3] = (N >> 8) & 0xFF;
+    salt[4] = N & 0xFF;
+    salt[5] = r;
+    salt[6] = p;
+    fwrite(salt, 1, PRE_SALT_LEN, out);
+
+    /* generate random salt+iv, then write it out */
+    if (RAND_bytes(salt, SALT_IV_LEN) <= 0) {
+        if(NULL != err) {
+            fprintf(err, "random salt+iv generation error\n");
+            ERR_print_errors_fp(err);
+        }
+        return 0;
+    }
+    fwrite(salt, 1, SALT_IV_LEN, out);
+
+    if(1 != scrypt_derive_key(password, scrypt_max_mem_mb, N, r, p, salt, key, err))
+        return 0;
+
+    return gcm_encrypt(key, iv, buffer_size, in, out, err);
+}
+
+/* returns 1 on success, 0 on failure */
+int pegh_decrypt(char *password,
+         uint32_t scrypt_max_mem_mb, size_t buffer_size,
+         FILE *in, FILE *out, FILE *err)
+{
+    unsigned char key[KEY_LEN] = {0}, salt[SALT_IV_LEN] = {0};
+    /* this is simply a pointer into salt */
+    const unsigned char *iv = salt + SALT_LEN;
+
+    size_t header_read;
+
+    uint32_t N;
+    uint8_t r, p;
+
+    /* first read the version and parameters */
+    header_read = fread(salt, 1, PRE_SALT_LEN, in);
+    if(header_read != PRE_SALT_LEN) {
+        if(NULL != err)
+            fprintf(err, "File too small for decryption, invalid header?\n");
+        return 0;
+    }
+    if(salt[0] != 0) {
+        if(NULL != err)
+            fprintf(err, "unsupported file format version %d, we only support version 0\n", salt[0]);
+        return 0;
+    }
+    N = ((salt[1] & 0xFF) << 24)
+        | ((salt[2] & 0xFF) << 16)
+        | ((salt[3] & 0xFF) << 8)
+        | (salt[4] & 0xFF);
+    r = salt[5];
+    p = salt[6];
+
+    /* next read salt+iv */
+    header_read = fread(salt, 1, SALT_IV_LEN, in);
+    if(header_read != SALT_IV_LEN) {
+        if(NULL != err)
+            fprintf(err, "File too small for decryption, invalid header?\n");
+        return 0;
+    }
+
+    if(1 != scrypt_derive_key(password, scrypt_max_mem_mb, N, r, p, salt, key, err))
+        return 0;
+
+    return gcm_decrypt(key, iv, buffer_size, in, out, err);
 }
 
 int help(int exit_code) {
     /* this ridiculous split is because C89 only supports strings of 509 characters */
     fprintf(stderr, "\
-usage: pegh [-demNrpshV] password\n\
- -e            encrypt stdin to stdout, default mode\n\
- -d            decrypt stdin to stdout\n\
+usage: pegh [options...] password\n\
+ -e            encrypt input to output, default mode\n\
+ -d            decrypt input to output\n\
+ -i <filename> file to use for input, default stdin\n\
+ -o <filename> file to use for output, if set and there is an error and append\n\
+               is not set, we try to delete this file before exiting,\n");
+    fprintf(stderr, "\
+               default stdout\n\
+ -a            append to -o instead of truncate\n\
+ -b <max_mb>   maximum megabytes of ram to use per read/write buffer, so while\n\
+               decrypting/encrypting twice this will be used, but these are\n");
+    fprintf(stderr, "\
+               only allocated after scrypt is finished so max usage will be\n\
+               the highest of these only, not both combined, default: %d\n\
  -m <max_mb>   maximum megabytes of ram to use when deriving key from password\n\
                with scrypt, applies for encryption AND decryption, must\n\
                almost linearly scale with -N, if too low operation will fail,\n\
-               default: %d\n", SCRYPT_MAX_MEM_MB);
+               default: %d\n", BUFFER_SIZE_MB, SCRYPT_MAX_MEM_MB);
     fprintf(stderr, "\
  -N <num>      scrypt parameter N, only applies for encryption, default %d\n\
                this is rounded up to the next highest power of 2\n\
@@ -362,6 +454,7 @@ usage: pegh [-demNrpshV] password\n\
                BEWARE: -s 32 requires 2G ram, -s 64 requires 4G and so on,\n\
                default: 1\n\
  -h            print this usage text\n\
+ -q            do not print error output to stderr\n\
  -V            show version number and format version support then quit\n\
 \nFor additional info on scrypt params refer to:\n\
     https://blog.filippo.io/the-scrypt-parameters/\n\
@@ -410,10 +503,13 @@ uint32_t next_highest_power_of_2(uint32_t v) {
 /* returns 0 on success, 1 on openssl failure, 2 on other failure */
 int main(int argc, char **argv)
 {
-    int optind, decrypt = 0;
+    int optind, decrypt = 0, append = 0, exit_code = 2;
     char *password = NULL;
-    uint32_t N = SCRYPT_N, scrypt_max_mem_mb = SCRYPT_MAX_MEM_MB, scale = 1;
+    uint32_t N = SCRYPT_N, scrypt_max_mem_mb = SCRYPT_MAX_MEM_MB, buffer_size_mb = BUFFER_SIZE_MB, scale = 1;
     uint8_t r = SCRYPT_R, p = SCRYPT_P;
+
+    FILE *in = stdin, *out = stdout, *err = stderr;
+    char *in_filename = NULL, *out_filename = NULL;
 
     for (optind = 1; optind < argc; ++optind) {
         if(strlen(argv[optind]) == 2 && argv[optind][0] == '-') {
@@ -431,6 +527,26 @@ int main(int argc, char **argv)
             case 'd':
                 decrypt = 1;
                 break;
+            case 'a':
+                append = 1;
+                break;
+            case 'i':
+                if(++optind >= argc) {
+                    fprintf(stderr, "Error: %s requires an argument\n", argv[optind - 1]);
+                    return help(2);
+                }
+                in_filename = argv[optind];
+                break;
+            case 'o':
+                if(++optind >= argc) {
+                    fprintf(stderr, "Error: %s requires an argument\n", argv[optind - 1]);
+                    return help(2);
+                }
+                out_filename = argv[optind];
+                break;
+            case 'b':
+                buffer_size_mb = parse_int_arg(++optind, argc, argv);
+                break;
             case 'm':
                 scrypt_max_mem_mb = parse_int_arg(++optind, argc, argv);
                 break;
@@ -446,6 +562,9 @@ int main(int argc, char **argv)
             case 'p':
                 p = parse_byte_arg(++optind, argc, argv);
                 break;
+            case 'q':
+                err = NULL;
+                break;
             case 'V':
                 fprintf(stderr, "pegh %s\nformat versions supported: 0\n", PEGH_VERSION);
                 return 0;
@@ -453,25 +572,25 @@ int main(int argc, char **argv)
                 return help(0);
             default:
                 fprintf(stderr, "Error: invalid option %s\n", argv[optind]);
-                return help(2);
+                return help(exit_code);
             }
         } else if (password == NULL) {
             password = argv[optind];
         } else {
             fprintf (stderr, "Error: more than one password provided\n");
-            return help(2);
+            return help(exit_code);
         }
     }
 
     if(password == NULL) {
         if(argc == optind) {
             fprintf (stderr, "Error: no password provided\n");
-            return help(2);
+            return help(exit_code);
         }
 
         if((argc - optind) != 1) {
             fprintf (stderr, "Error: more than one password provided\n");
-            return help(2);
+            return help(exit_code);
         }
         password = argv[optind];
     }
@@ -486,5 +605,37 @@ int main(int argc, char **argv)
     return 0;
     */
 
-    return pegh(password, decrypt, scrypt_max_mem_mb, N, r, p);
+    if(NULL != in_filename) {
+        in = fopen(in_filename, "rb");
+        if(!in) {
+            fprintf (stderr, "Error: file '%s' cannot be opened for reading\n", in_filename);
+            return exit_code;
+        }
+    }
+    if(NULL != out_filename) {
+        out = fopen(out_filename, append ? "ab" : "wb");
+        if(!out) {
+            fprintf (stderr, "Error: file '%s' cannot be opened for writing\n", out_filename);
+            if(NULL != in_filename)
+                fclose(in);
+            return exit_code;
+        }
+    }
+
+    if(decrypt)
+        exit_code = pegh_decrypt(password, scrypt_max_mem_mb, 1024 * 1024 * buffer_size_mb, in, out, err);
+    else
+        exit_code = pegh_encrypt(password, scrypt_max_mem_mb, 1024 * 1024 * buffer_size_mb, in, out, err, N, r, p);
+
+    if(NULL != in_filename)
+        fclose(in);
+    if(NULL != out_filename) {
+        fclose(out);
+        /* attempt to stop programs from using incomplete/bad data */
+        if(exit_code != 1 && !append)
+            remove(out_filename);
+    }
+
+    /* to the OS, 0 means success, the above functions 1 means success */
+    return exit_code == 1 ? 0 : 1;
 }
