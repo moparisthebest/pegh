@@ -275,7 +275,12 @@ void wipe_memory(void * const ptr, const size_t len) {
 #include <sodium.h>
 
 /* unlike openssl, libsodium uses proper types, so we can go all the way up to the "aes-gcm-256 is still secure" limit of around 32gb */
+/*
+// actually this is breaking on x86 and aarch64 where size_t is `unsigned int` and this overflows, how to handle???
 static const size_t CHUNK_SIZE_MAX = 1024UL * 1024 * 1024 * 32;
+// for now, 4gb will do?
+*/
+static const size_t CHUNK_SIZE_MAX = UINT_MAX;
 
 /*
  * returns 1 on success, 0 on failure

@@ -4,18 +4,18 @@ export dummy_file="$1"
 shift
 export dummy_mb="$1"
 
-[ "$dummy_file" = "" ] && export dummy_file='/dev/shm/randombytes'
+[ "$dummy_file" = "" ] && export dummy_file='/tmp/randombytes'
 [ "$dummy_mb" = "" ] && export dummy_mb='100'
 
-set -euo pipefail
+[ "$TEST_BINS" = "" ] && TEST_BINS="./pegh.openssl ./pegh.libsodium"
+
+set -euxo pipefail
 
 # try different size files to encrypt/decrypt
 [ -e "$dummy_file" ] || dd if=/dev/urandom bs=1M "count=$dummy_mb" of="$dummy_file"
 
 # try make if it's installed, otherwise fall back to cc
-bins="./pegh.openssl ./pegh.libsodium"
-#bins="./pegh.libsodium ./pegh.openssl"
-rm -f pegh $bins
+rm -f pegh
 
 # compile against openssl
 make PEGH_OPENSSL=1 || cc pegh.c -DPEGH_OPENSSL -lcrypto -O3 -o pegh
@@ -33,14 +33,14 @@ test () {
     bin="$1"
     bin_decrypt="${2:-$bin}"
 
-    echo "testing bins: $bin bin_decrypt: $bin_decrypt"
+    echo "testing binaries bin: $bin bin_decrypt: $bin_decrypt"
 
     echo 'encrypting then decrypting with the same key should succeed'
     "$bin" -e "$key" < "$dummy_file" | "$bin_decrypt" -d "$key" | cmp - "$dummy_file"
 
     echo 'test with -s 32 requiring 2gb of ram should succeed'
     # can send -s 32 or -m 2048 to decrypt command with identical effect
-    "$bin" -e "$key" -s 32 < "$dummy_file" | "$bin_decrypt" -d "$key" -m 2048 | cmp - "$dummy_file"
+    #"$bin" -e "$key" -s 32 < "$dummy_file" | "$bin_decrypt" -d "$key" -m 2048 | cmp - "$dummy_file"
 
     set +e
     # these should fail
@@ -58,9 +58,9 @@ test () {
     set -e
 }
 
-for bin in $bins
+for bin in $TEST_BINS
 do
-    for bin_decrypt in $bins
+    for bin_decrypt in $TEST_BINS
     do
         time test $bin $bin_decrypt
     done
