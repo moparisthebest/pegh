@@ -103,6 +103,13 @@ int gcm_encrypt(const unsigned char *key, const unsigned char *iv, size_t buffer
     int exit_code = 0, ciphertext_written;
     size_t plaintext_read;
 
+    if(buffer_size > INT_MAX) {
+        /* this is because we read up to buffer_size at once, and then send that value to openssl which uses int instead of size_t */
+        if(NULL != err)
+            fprintf(err, "due to openssl API buffer_size can at most be %d\n", INT_MAX);
+        return 0;
+    }
+
     do {
         plaintext = malloc(buffer_size);
         if(!plaintext) {
@@ -141,7 +148,7 @@ int gcm_encrypt(const unsigned char *key, const unsigned char *iv, size_t buffer
         */
         while ((plaintext_read = fread(plaintext, 1, buffer_size, in)) > 0) {
 
-            if(1 != EVP_EncryptUpdate(ctx, ciphertext, &ciphertext_written, plaintext, plaintext_read))
+            if(1 != EVP_EncryptUpdate(ctx, ciphertext, &ciphertext_written, plaintext, (int) plaintext_read))
                 goto fail;
 
             if(((size_t) ciphertext_written) != plaintext_read) {
@@ -150,7 +157,7 @@ int gcm_encrypt(const unsigned char *key, const unsigned char *iv, size_t buffer
                 goto fail;
             }
 
-            fwrite(ciphertext, 1, ciphertext_written, out);
+            fwrite(ciphertext, 1, (size_t) ciphertext_written, out);
         }
 
         /*
@@ -217,6 +224,13 @@ int gcm_decrypt(const unsigned char *key, const unsigned char *iv, size_t buffer
     int exit_code = 0, plaintext_written;
     size_t ciphertext_read;
 
+    if(buffer_size > INT_MAX) {
+        /* this is because we read up to buffer_size at once, and then send that value to openssl which uses int instead of size_t */
+        if(NULL != err)
+            fprintf(err, "due to openssl API buffer_size can at most be %d\n", INT_MAX);
+        return 0;
+    }
+
     do {
         plaintext = malloc(buffer_size);
         if(!plaintext) {
@@ -267,7 +281,7 @@ int gcm_decrypt(const unsigned char *key, const unsigned char *iv, size_t buffer
             ciphertext_read = fread(ciphertext_read_zone, 1, buffer_size, in);
 
             /* decrypt the bytes previously saved in tag plus ones currently read except the last 16 bytes */
-            if(1 != EVP_DecryptUpdate(ctx, plaintext, &plaintext_written, tag, ciphertext_read))
+            if(1 != EVP_DecryptUpdate(ctx, plaintext, &plaintext_written, tag, (int) ciphertext_read))
                 goto fail;
             /* now save the unused last 16 bytes in tag */
             memcpy(tag, ciphertext_read_zone + ciphertext_read - GCM_TAG_LEN, GCM_TAG_LEN);
@@ -278,7 +292,7 @@ int gcm_decrypt(const unsigned char *key, const unsigned char *iv, size_t buffer
                 goto fail;
             }
 
-            fwrite(plaintext, 1, plaintext_written, out);
+            fwrite(plaintext, 1, (size_t) plaintext_written, out);
         } while(buffer_size == ciphertext_read);
 
 
@@ -351,7 +365,7 @@ int pegh_encrypt(char *password,
 
     /* first write the version and parameters */
     salt[0] = 0;
-    salt[1] = (N >> 24) & 0xFF;
+    salt[1] = (unsigned char) ((N >> 24) & 0xFF);
     salt[2] = (N >> 16) & 0xFF;
     salt[3] = (N >> 8) & 0xFF;
     salt[4] = N & 0xFF;
@@ -401,10 +415,10 @@ int pegh_decrypt(char *password,
             fprintf(err, "unsupported file format version %d, we only support version 0\n", salt[0]);
         return 0;
     }
-    N = ((salt[1] & 0xFF) << 24)
-        | ((salt[2] & 0xFF) << 16)
-        | ((salt[3] & 0xFF) << 8)
-        | (salt[4] & 0xFF);
+    N = (uint32_t) ((salt[1] & 0xFF) << 24)
+        | (uint32_t) ((salt[2] & 0xFF) << 16)
+        | (uint32_t) ((salt[3] & 0xFF) << 8)
+        | (uint32_t) (salt[4] & 0xFF);
     r = salt[5];
     p = salt[6];
 
@@ -459,24 +473,31 @@ usage: pegh [options...] password\n\
 \nFor additional info on scrypt params refer to:\n\
     https://blog.filippo.io/the-scrypt-parameters/\n\
     https://tools.ietf.org/html/rfc7914#section-2\n\n");
-    exit(exit_code);
+
     return exit_code;
 }
 
+void help_exit(int exit_code) {
+    help(exit_code);
+    exit(exit_code);
+}
+
 uint32_t parse_int_arg(int optind, int argc, char **argv) {
-    uint32_t tmp = 0;
+    uint64_t tmp = 0;
 
     if(optind >= argc) {
         fprintf(stderr, "Error: %s requires an argument\n", argv[optind - 1]);
-        return help(2);
+        help_exit(2);
+        return 0;
     }
     errno = 0;
     tmp = strtoul(argv[optind], NULL, 10);
-    if(errno != 0 || tmp < 1) {
+    if(errno != 0 || tmp < 1 || tmp > UINT_MAX) {
         fprintf(stderr, "Error: %s %s failed to parse as a number\n", argv[optind - 1], argv[optind]);
-        return help(2);
+        help_exit(2);
+        return 0;
     }
-    return tmp;
+    return (uint32_t) tmp;
 }
 
 uint8_t parse_byte_arg(int optind, int argc, char **argv) {
@@ -485,7 +506,8 @@ uint8_t parse_byte_arg(int optind, int argc, char **argv) {
     tmp = parse_int_arg(optind, argc, argv);
     if(tmp > 255) {
         fprintf(stderr, "Error: %s %s failed to parse as a number 1-255\n", argv[optind - 1], argv[optind]);
-        return help(2);
+        help_exit(2);
+        return 0;
     }
     return (uint8_t) tmp;
 }
