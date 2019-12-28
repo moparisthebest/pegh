@@ -35,7 +35,7 @@ test () {
     # todo: can we also make this the case for stdout? needs some buffering...
     echo 'bad decryption should result in output file being deleted'
     echo 'hopefully this doesnt make it to disk' | "$bin" "$key" | cat - <(echo -n a) | "$bin" -d "$key" -o bla.txt && exit 1
-    [ -e bla.txt ] && echo "ERROR: bla.txt should not exist" && exit 1
+    [ -s bla.txt ] && echo "ERROR: bla.txt should not exist" && exit 1
     set -e
 }
 
