@@ -5,9 +5,21 @@
 
 CFLAGS += -Wall -Wextra -Werror -std=c89 -pedantic \
        -Wstrict-prototypes -Wold-style-definition -Wconversion \
-        -Wno-missing-prototypes -Wno-missing-noreturn \
+       -Wno-missing-prototypes -Wno-missing-noreturn \
        -O3
+
+ifdef PEGH_OPENSSL
+CFLAGS += -DPEGH_OPENSSL
 LDFLAGS += -lcrypto
+else
+ifdef PEGH_LIBSODIUM
+CFLAGS += -DPEGH_LIBSODIUM
+LDFLAGS += -lsodium
+else
+CFLAGS += -DPEGH_OPENSSL
+LDFLAGS += -lcrypto
+endif
+endif
 
 all : pegh
 

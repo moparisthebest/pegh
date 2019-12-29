@@ -19,15 +19,11 @@
 
 /* compile with: cc pegh.c -lcrypto -O3 -o pegh */
 
-#include <openssl/conf.h>
-#include <openssl/evp.h>
-#include <openssl/err.h>
-#include <openssl/rand.h>
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#include <errno.h>
 
 /*
  * tweak default scrypt hardness params here
@@ -38,10 +34,10 @@
 #define SCRYPT_N 32768
 #define SCRYPT_R 8
 #define SCRYPT_P 1
-#define SCRYPT_MAX_MEM_MB 64
+#define SCRYPT_MAX_MEM 1024 * 1024 * 64 /* 64 megabytes */
 
 /* tweak buffer sizes here, memory use will be twice this */
-#define BUFFER_SIZE_MB 16
+#define BUFFER_SIZE_MB 32
 
 /*
  * pegh file format, numbers are inclusive 0-based byte array indices
@@ -80,6 +76,21 @@
 #define IV_LEN 12
 #define GCM_TAG_LEN 16
 
+/* default of OpenSSL for now... */
+#if !defined(PEGH_OPENSSL) && !defined(PEGH_LIBSODIUM)
+#define PEGH_OPENSSL 1
+#endif
+
+#ifdef PEGH_OPENSSL
+
+#include <openssl/conf.h>
+#include <openssl/evp.h>
+#include <openssl/err.h>
+#include <openssl/rand.h>
+
+/* this is because we read up to buffer_size at once, and then send that value to openssl which uses int instead of size_t, limit of 2gb */
+static const size_t CHUNK_SIZE_MAX = INT_MAX;
+
 /*
  * returns 1 on success, 0 on failure
  *
@@ -93,7 +104,7 @@
  * ciphertext must have the capacity of at least plaintext_len
  * tag must have the capacity of at least GCM_TAG_LEN
  */
-int gcm_encrypt(const unsigned char *plaintext, const int plaintext_len,
+int gcm_encrypt(const unsigned char *plaintext, const size_t plaintext_len,
                 const unsigned char *key,
                 const unsigned char *iv,
                 unsigned char *ciphertext,
@@ -125,7 +136,7 @@ int gcm_encrypt(const unsigned char *plaintext, const int plaintext_len,
         * Provide the message to be encrypted, and obtain the encrypted output.
         * EVP_EncryptUpdate can be called multiple times if necessary
         */
-        if(1 != EVP_EncryptUpdate(ctx, ciphertext, &ciphertext_written, plaintext, plaintext_len))
+        if(1 != EVP_EncryptUpdate(ctx, ciphertext, &ciphertext_written, plaintext, (int) plaintext_len))
             break;
 
         /* if this isn't true, GCM is broken, we probably don't need to check...
@@ -167,7 +178,7 @@ int gcm_encrypt(const unsigned char *plaintext, const int plaintext_len,
  * these will be written into:
  * plaintext must have the capacity of at least ciphertext_len
  */
-int gcm_decrypt(const unsigned char *ciphertext, const int ciphertext_len,
+int gcm_decrypt(const unsigned char *ciphertext, const size_t ciphertext_len,
                 const unsigned char *key,
                 const unsigned char *iv,
                 unsigned char *tag,
@@ -199,7 +210,7 @@ int gcm_decrypt(const unsigned char *ciphertext, const int ciphertext_len,
         * Provide the message to be decrypted, and obtain the plaintext output.
         * EVP_DecryptUpdate can be called multiple times if necessary
         */
-        if(!EVP_DecryptUpdate(ctx, plaintext, &plaintext_written, ciphertext, ciphertext_len))
+        if(!EVP_DecryptUpdate(ctx, plaintext, &plaintext_written, ciphertext, (int) ciphertext_len))
             break;
 
         /* if this isn't true, GCM is broken, we probably don't need to check...
@@ -227,6 +238,146 @@ int gcm_decrypt(const unsigned char *ciphertext, const int ciphertext_len,
 
     return ret;
 }
+
+/* returns 1 on success, 0 on error */
+int scrypt_derive_key(char *password, size_t password_len,
+         uint32_t scrypt_max_mem, uint32_t N,
+         uint8_t r, uint8_t p, unsigned char *salt, unsigned char *key, FILE *err) {
+    /* derive key using salt, password, and scrypt parameters */
+    if (EVP_PBE_scrypt(
+        password, password_len,
+        salt, SALT_LEN,
+        (uint64_t) N, (uint64_t) r, (uint64_t) p,
+        (uint64_t) scrypt_max_mem,
+        key, KEY_LEN
+    ) <= 0) {
+        if(NULL != err) {
+            fprintf(err, "scrypt key derivation error\n");
+            ERR_print_errors_fp(err);
+        }
+        return 0;
+    }
+    return 1;
+}
+
+/* returns 1 on success, 0 on error */
+int random_salt(unsigned char *salt) {
+    return RAND_bytes(salt, SALT_LEN) <= 0 ? 0 : 1;
+}
+
+void wipe_memory(void * const ptr, const size_t len) {
+    OPENSSL_cleanse(ptr, len);
+}
+
+#endif
+#ifdef PEGH_LIBSODIUM
+
+#include <sodium.h>
+
+/* unlike openssl, libsodium uses proper types, so we can go all the way up to the "aes-gcm-256 is still secure" limit of around 32gb */
+static const size_t CHUNK_SIZE_MAX = 1024UL * 1024 * 1024 * 32;
+
+/*
+ * returns 1 on success, 0 on failure
+ *
+ * these will be read from:
+ * plaintext
+ * plaintext_len
+ * key must be length KEY_LEN
+ * iv must be length IV_LEN
+ *
+ * these will be written into:
+ * ciphertext must have the capacity of at least plaintext_len
+ * tag must have the capacity of at least GCM_TAG_LEN
+ */
+int gcm_encrypt(const unsigned char *plaintext, const size_t plaintext_len,
+                const unsigned char *key,
+                const unsigned char *iv,
+                unsigned char *ciphertext,
+                unsigned char *tag
+               )
+{
+    crypto_aead_aes256gcm_encrypt_detached(ciphertext,
+                                           tag, NULL,
+                              plaintext, plaintext_len,
+                              NULL, 0,
+                              NULL, iv, key);
+    return 1;
+}
+
+/*
+ * returns 1 on success, 0 on failure
+ *
+ * these will be read from:
+ * ciphertext
+ * ciphertext_len
+ * key must be length KEY_LEN
+ * iv must be length IV_LEN
+ * tag must be length GCM_TAG_LEN
+ *
+ * these will be written into:
+ * plaintext must have the capacity of at least ciphertext_len
+ */
+int gcm_decrypt(const unsigned char *ciphertext, const size_t ciphertext_len,
+                const unsigned char *key,
+                const unsigned char *iv,
+                unsigned char *tag,
+                unsigned char *plaintext
+               )
+{
+    return crypto_aead_aes256gcm_decrypt_detached(plaintext,
+                                  NULL,
+                                  ciphertext, (size_t) ciphertext_len,
+                                  tag,
+                                  NULL, 0,
+                                  iv, key) != 0 ? 0 : 1;
+}
+
+/* returns 1 on success, 0 on error */
+int scrypt_derive_key(char *password, size_t password_len,
+         uint32_t scrypt_max_mem, uint32_t N,
+         uint8_t r, uint8_t p, unsigned char *salt, unsigned char *key, FILE *err) {
+    size_t needed_memory;
+    /* derive key using salt, password, and scrypt parameters */
+
+    /* this is how crypto_pwhash_scryptsalsa208sha256_ll calculates the memory needed, so do it here first and check */
+    needed_memory = (size_t) 128 * r * p;
+    needed_memory += (size_t) 128 * r * (size_t) N;
+    needed_memory += (size_t) 256 * r + 64;
+
+    if (needed_memory > scrypt_max_mem) {
+        if(NULL != err) {
+            /* +1 is to round up here and avoid math.h and ceil()... */
+            fprintf(err, "scrypt key derivation error, needed memory %lu mb, allowed memory %d mb, increase -m\n", (needed_memory / 1024 / 1024) + 1, scrypt_max_mem / 1024 / 1024);
+        }
+        return 0;
+    }
+
+    if (crypto_pwhash_scryptsalsa208sha256_ll(
+        (const uint8_t *) password, password_len,
+        salt, SALT_LEN,
+        (uint64_t) N, (uint32_t) r, (uint32_t) p,
+        key, KEY_LEN
+    ) < 0) {
+        if(NULL != err) {
+            fprintf(err, "scrypt key derivation error\n");
+        }
+        return 0;
+    }
+    return 1;
+}
+
+/* returns 1 on success, 0 on error */
+int random_salt(unsigned char *salt) {
+    randombytes_buf(salt, SALT_LEN);
+    return 1;
+}
+
+void wipe_memory(void * const ptr, const size_t len) {
+    sodium_memzero(ptr, len);
+}
+
+#endif
 
 /* returns 1 on success, 0 on failure */
 int iv_increment_forbid_zero(unsigned char *n, const size_t nlen, FILE *err)
@@ -256,7 +407,7 @@ int gcm_encrypt_stream(const unsigned char *key, unsigned char *iv, size_t buffe
 
     while ((plaintext_read = fread(plaintext, 1, buffer_size, in)) > 0) {
 
-        if(1 != gcm_encrypt(plaintext, (int) plaintext_read, key, iv, ciphertext, ciphertext + plaintext_read))
+        if(1 != gcm_encrypt(plaintext, plaintext_read, key, iv, ciphertext, ciphertext + plaintext_read))
             return 0;
 
         if(1 != iv_increment_forbid_zero(iv, IV_LEN, err))
@@ -286,7 +437,7 @@ int gcm_decrypt_stream(const unsigned char *key, unsigned char *iv, size_t buffe
 
         ciphertext_read -= GCM_TAG_LEN;
 
-        if(1 != gcm_decrypt(ciphertext, (int) ciphertext_read, key, iv, ciphertext + ciphertext_read, plaintext))
+        if(1 != gcm_decrypt(ciphertext, ciphertext_read, key, iv, ciphertext + ciphertext_read, plaintext))
                 return 0;
 
         if(1 != iv_increment_forbid_zero(iv, IV_LEN, err))
@@ -321,10 +472,15 @@ int gcm_stream(const unsigned char *key, size_t buffer_size,
 
     int exit_code = 0;
 
-    if(buffer_size > INT_MAX) {
-        /* this is because we read up to buffer_size at once, and then send that value to openssl which uses int instead of size_t */
-        if(NULL != err)
-            fprintf(err, "due to openssl API buffer_size can at most be %d\n", INT_MAX);
+    if(buffer_size > CHUNK_SIZE_MAX) {
+        if(NULL != err) {
+#ifdef PEGH_OPENSSL
+            fprintf(err, "due to openssl API limitation, buffer_size can at most be %ld\n", CHUNK_SIZE_MAX);
+#endif
+#ifdef PEGH_LIBSODIUM
+            fprintf(err, "due to AES-256-GCM security constraints, buffer_size can at most be %ld\n", CHUNK_SIZE_MAX);
+#endif
+        }
         return 0;
     }
 
@@ -349,33 +505,14 @@ int gcm_stream(const unsigned char *key, size_t buffer_size,
     free(ciphertext);
 
     if(NULL != err && exit_code != 1) {
+#ifdef PEGH_OPENSSL
         /* print openssl errors */
         ERR_print_errors_fp(err);
+#endif
         fprintf(err, "%scryption failed\n", decrypt ? "de" : "en");
     }
 
     return exit_code;
-}
-
-/* returns 1 on success, 0 on error */
-int scrypt_derive_key(char *password,
-         uint32_t scrypt_max_mem_mb, uint32_t N,
-         uint8_t r, uint8_t p, unsigned char *salt, unsigned char *key, FILE *err) {
-    /* derive key using salt, password, and scrypt parameters */
-    if (EVP_PBE_scrypt(
-        password, strlen(password),
-        salt, SALT_LEN,
-        (uint64_t) N, (uint64_t) r, (uint64_t) p,
-        (uint64_t) scrypt_max_mem_mb * 1024 * 1024,
-        key, KEY_LEN
-    ) <= 0) {
-        if(NULL != err) {
-            fprintf(err, "scrypt key derivation error\n");
-            ERR_print_errors_fp(err);
-        }
-        return 0;
-    }
-    return 1;
 }
 
 /* buf must be at least 4 bytes */
@@ -395,12 +532,33 @@ void write_uint32_big_endian(uint32_t val, unsigned char *buf) {
 }
 
 /* returns 1 on success, 0 on failure */
+int scrypt_derive_key_gcm_stream(char *password,
+         uint32_t scrypt_max_mem, size_t buffer_size,
+         FILE *in, FILE *out, FILE *err,
+         uint32_t N, uint8_t r, uint8_t p, unsigned char *salt, int decrypt) {
+    unsigned char key[KEY_LEN] = {0};
+    int ret;
+    size_t password_len;
+
+    password_len = strlen(password);
+
+    ret = scrypt_derive_key(password, password_len, scrypt_max_mem, N, r, p, salt, key, err);
+    wipe_memory(password, password_len);
+
+    if(ret == 1)
+        ret = gcm_stream(key, buffer_size, decrypt, in, out, err);
+
+    wipe_memory(key, KEY_LEN);
+    return ret;
+}
+
+/* returns 1 on success, 0 on failure */
 int pegh_encrypt(char *password,
-         uint32_t scrypt_max_mem_mb, size_t buffer_size,
+         uint32_t scrypt_max_mem, size_t buffer_size,
          FILE *in, FILE *out, FILE *err,
          uint32_t N, uint8_t r, uint8_t p)
 {
-    unsigned char key[KEY_LEN] = {0}, salt[SALT_LEN] = {0};
+    unsigned char salt[SALT_LEN] = {0};
 
     /* first write the version and parameters */
     salt[0] = 0;
@@ -411,27 +569,26 @@ int pegh_encrypt(char *password,
     fwrite(salt, 1, PRE_SALT_LEN, out);
 
     /* generate random salt, then write it out */
-    if (RAND_bytes(salt, SALT_LEN) <= 0) {
+    if (random_salt(salt) != 1) {
         if(NULL != err) {
             fprintf(err, "random salt generation error\n");
+#ifdef PEGH_OPENSSL
             ERR_print_errors_fp(err);
+#endif
         }
         return 0;
     }
     fwrite(salt, 1, SALT_LEN, out);
 
-    if(1 != scrypt_derive_key(password, scrypt_max_mem_mb, N, r, p, salt, key, err))
-        return 0;
-
-    return gcm_stream(key, buffer_size, 0, in, out, err);
+    return scrypt_derive_key_gcm_stream(password, scrypt_max_mem, buffer_size, in, out, err, N, r, p, salt, 0);
 }
 
 /* returns 1 on success, 0 on failure */
 int pegh_decrypt(char *password,
-         uint32_t scrypt_max_mem_mb, size_t max_buffer_size,
+         uint32_t scrypt_max_mem, size_t max_buffer_size,
          FILE *in, FILE *out, FILE *err)
 {
-    unsigned char key[KEY_LEN] = {0}, salt[SALT_LEN] = {0};
+    unsigned char salt[SALT_LEN] = {0};
 
     size_t header_read, buffer_size;
 
@@ -468,10 +625,7 @@ int pegh_decrypt(char *password,
         return 0;
     }
 
-    if(1 != scrypt_derive_key(password, scrypt_max_mem_mb, N, r, p, salt, key, err))
-        return 0;
-
-    return gcm_stream(key, buffer_size, 1, in, out, err);
+    return scrypt_derive_key_gcm_stream(password, scrypt_max_mem, buffer_size, in, out, err, N, r, p, salt, 1);
 }
 
 int help(int exit_code) {
@@ -492,11 +646,11 @@ usage: pegh [options...] password\n\
     fprintf(stderr, "\
                only allocated after scrypt is finished so max usage will be\n\
                the highest of these only, not both combined,\n\
-               max: %d, default: %d\n\
+               max: %ld, default: %d\n\
  -m <max_mb>   maximum megabytes of ram to use when deriving key from password\n\
                with scrypt, applies for encryption AND decryption, must\n\
                almost linearly scale with -N, if too low operation will fail,\n\
-               default: %d\n", INT_MAX / 1024 / 1024, BUFFER_SIZE_MB, SCRYPT_MAX_MEM_MB);
+               default: %d\n", CHUNK_SIZE_MAX / 1024 / 1024, BUFFER_SIZE_MB, SCRYPT_MAX_MEM / 1024 / 1024);
     fprintf(stderr, "\
  -N <num>      scrypt parameter N, only applies for encryption, default %d\n\
                this is rounded up to the next highest power of 2\n\
@@ -567,11 +721,22 @@ int main(int argc, char **argv)
 {
     int optind, decrypt = 0, append = 0, exit_code = 2;
     char *password = NULL;
-    uint32_t N = SCRYPT_N, scrypt_max_mem_mb = SCRYPT_MAX_MEM_MB, buffer_size = BUFFER_SIZE_MB * 1024 * 1024, scale = 1;
+    uint32_t N = SCRYPT_N, scrypt_max_mem = SCRYPT_MAX_MEM, buffer_size = BUFFER_SIZE_MB * 1024 * 1024, scale = 1;
     uint8_t r = SCRYPT_R, p = SCRYPT_P;
 
     FILE *in = stdin, *out = stdout, *err = stderr;
     char *in_filename = NULL, *out_filename = NULL;
+
+#ifdef PEGH_LIBSODIUM
+    if (sodium_init() == -1) {
+        fprintf(stderr, "Error: libsodium could not be initialized, compile/use openssl version?\n");
+        return 2;
+    }
+    if (crypto_aead_aes256gcm_is_available() == 0) {
+        fprintf(stderr, "Error: libsodium does not support AES-256-GCM on this CPU, compile/use openssl version?\n");
+        return 2;
+    }
+#endif
 
     for (optind = 1; optind < argc; ++optind) {
         if(strlen(argv[optind]) == 2 && argv[optind][0] == '-') {
@@ -608,13 +773,13 @@ int main(int argc, char **argv)
                 break;
             case 'c':
                 buffer_size = parse_int_arg(++optind, argc, argv) * 1024 * 1024;
-                if(buffer_size > INT_MAX) {
-                    fprintf(stderr, "Error: %s chunk size cannot exceed %d megabytes\n", argv[optind - 1], INT_MAX / 1024 / 1024);
+                if(buffer_size > CHUNK_SIZE_MAX) {
+                    fprintf(stderr, "Error: %s chunk size cannot exceed %ld megabytes\n", argv[optind - 1], CHUNK_SIZE_MAX / 1024 / 1024);
                     return help(2);
                 }
                 break;
             case 'm':
-                scrypt_max_mem_mb = parse_int_arg(++optind, argc, argv);
+                scrypt_max_mem = parse_int_arg(++optind, argc, argv) * 1024 * 1024;
                 break;
             case 'N':
                 N = next_highest_power_of_2(parse_int_arg(++optind, argc, argv));
@@ -663,11 +828,11 @@ int main(int argc, char **argv)
 
     /* apply scale */
     N *= scale;
-    scrypt_max_mem_mb *= scale;
+    scrypt_max_mem *= scale;
 
     /*
-    fprintf (stderr, "decrypt = %d, key = %s, scrypt_max_mem_mb = %d, N = %d, r = %d, p = %d, scale = %d\n",
-            decrypt, password, scrypt_max_mem_mb, N, r, p, scale);
+    fprintf (stderr, "decrypt = %d, key = %s, scrypt_max_mem = %d, N = %d, r = %d, p = %d, scale = %d\n",
+            decrypt, password, scrypt_max_mem, N, r, p, scale);
     return 0;
     */
 
@@ -689,9 +854,9 @@ int main(int argc, char **argv)
     }
 
     if(decrypt)
-        exit_code = pegh_decrypt(password, scrypt_max_mem_mb, buffer_size, in, out, err);
+        exit_code = pegh_decrypt(password, scrypt_max_mem, buffer_size, in, out, err);
     else
-        exit_code = pegh_encrypt(password, scrypt_max_mem_mb, buffer_size, in, out, err, N, r, p);
+        exit_code = pegh_encrypt(password, scrypt_max_mem, buffer_size, in, out, err, N, r, p);
 
     if(NULL != in_filename)
         fclose(in);
