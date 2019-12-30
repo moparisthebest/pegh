@@ -24,6 +24,8 @@ mv pegh pegh.static.openssl
 make clean all PEGH_LIBSODIUM=1 PEGH_OPENSSL=1 CC=clang LDFLAGS="-static -lcrypto" || clang pegh.c -DPEGH_LIBSODIUM -DPEGH_OPENSSL -static -lsodium -lcrypto -O3 -o pegh
 mv pegh pegh.static.libsodium-openssl
 
+./pegh.static.libsodium-openssl -h
+
 ls -lah pegh.static.*
 
 strip pegh.static.*

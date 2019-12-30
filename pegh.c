@@ -95,7 +95,7 @@ typedef int (*gcm_func)(const unsigned char *, const size_t,
 #include <openssl/rand.h>
 
 /* this is because we read up to buffer_size at once, and then send that value to openssl which uses int instead of size_t, limit of 2gb */
-static const size_t CHUNK_SIZE_MAX = INT_MAX;
+static const size_t CHUNK_SIZE_MAX_OPENSSL = INT_MAX;
 
 /*
  * returns 1 on success, 0 on failure
@@ -287,16 +287,15 @@ void wipe_memory(void * const ptr, const size_t len) {
 
 #include <sodium.h>
 
-/* for now in hybrid mode lazily use OPENSSL's CHUNK_SIZE_MAX which is smaller, solution to make them the same coming soon */
-#ifndef PEGH_OPENSSL
-/* unlike openssl, libsodium uses proper types, so we can go all the way up to the "aes-gcm-256 is still secure" limit of around 32gb */
 /*
-// actually this is breaking on x86 and aarch64 where size_t is `unsigned int` and this overflows, how to handle???
-static const size_t CHUNK_SIZE_MAX = 1024UL * 1024 * 1024 * 32;
-// for now, 4gb will do?
-*/
-static const size_t CHUNK_SIZE_MAX = UINT_MAX;
-#endif /* PEGH_OPENSSL */
+ * unlike openssl, libsodium uses proper types, so we can go all the way up to the "aes-gcm-256 is still secure" limit of around 32gb
+ * but 32-bit systems have SIZE_MAX smaller than that, so special case that here
+ */
+#if (1024UL * 1024 * 1024 * 32) > SIZE_MAX
+static const size_t CHUNK_SIZE_MAX_LIBSODIUM = SIZE_MAX;
+#else
+static const size_t CHUNK_SIZE_MAX_LIBSODIUM = 1024UL * 1024 * 1024 * 32;
+#endif
 
 /*
  * returns 1 on success, 0 on failure
@@ -402,11 +401,22 @@ void wipe_memory(void * const ptr, const size_t len) {
 
 /* always prefer libsodium AES if possible because it's faster */
 #ifdef PEGH_LIBSODIUM
-gcm_func gcm_encrypt = gcm_encrypt_libsodium;
-gcm_func gcm_decrypt = gcm_decrypt_libsodium;
+
+/* if PEGH_OPENSSL is defined, these can be redefined at runtime depending on CPU, otherwise const */
+#ifndef PEGH_OPENSSL
+#define PEGH_CONST const
+#else
+#define PEGH_CONST
+#endif
+
+static PEGH_CONST gcm_func gcm_encrypt = gcm_encrypt_libsodium;
+static PEGH_CONST gcm_func gcm_decrypt = gcm_decrypt_libsodium;
+static PEGH_CONST size_t CHUNK_SIZE_MAX = CHUNK_SIZE_MAX_LIBSODIUM;
+
 #elif PEGH_OPENSSL
-gcm_func gcm_encrypt = gcm_encrypt_openssl;
-gcm_func gcm_decrypt = gcm_decrypt_openssl;
+static const gcm_func gcm_encrypt = gcm_encrypt_openssl;
+static const gcm_func gcm_decrypt = gcm_decrypt_openssl;
+static const size_t CHUNK_SIZE_MAX = CHUNK_SIZE_MAX_OPENSSL;
 #endif
 
 /* returns 1 on success, 0 on failure */
@@ -768,6 +778,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "Warning: libsodium does not support AES-256-GCM on this CPU, falling back to openssl version instead...\n");
         gcm_encrypt = gcm_encrypt_openssl;
         gcm_decrypt = gcm_decrypt_openssl;
+        CHUNK_SIZE_MAX = CHUNK_SIZE_MAX_OPENSSL;
 #else
         /* nothing we can do */
         fprintf(stderr, "Error: libsodium does not support AES-256-GCM on this CPU, compile/use openssl version?\n");
