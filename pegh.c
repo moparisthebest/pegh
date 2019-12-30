@@ -25,19 +25,39 @@
 #include <limits.h>
 #include <errno.h>
 
+/* default of OpenSSL for now... */
+#if !defined(PEGH_OPENSSL) && !defined(PEGH_LIBSODIUM)
+#define PEGH_OPENSSL 1
+#endif
+
+#ifdef PEGH_OPENSSL
+
+#include <openssl/conf.h>
+#include <openssl/evp.h>
+#include <openssl/err.h>
+#include <openssl/rand.h>
+
+#endif /* PEGH_OPENSSL */
+
+#ifdef PEGH_LIBSODIUM
+
+#include <sodium.h>
+
+#endif /* PEGH_LIBSODIUM */
+
 /*
  * tweak default scrypt hardness params here
  *
  * https://tools.ietf.org/html/rfc7914#section-2
  * https://blog.filippo.io/the-scrypt-parameters/
  */
-#define SCRYPT_N 32768
-#define SCRYPT_R 8
-#define SCRYPT_P 1
-#define SCRYPT_MAX_MEM 1024 * 1024 * 64 /* 64 megabytes */
+const uint32_t SCRYPT_N = 32768;
+const uint8_t SCRYPT_R = 8;
+const uint8_t SCRYPT_P = 1;
+const size_t SCRYPT_MAX_MEM = 1024 * 1024 * 64; /* 64 megabytes */
 
 /* tweak buffer sizes here, memory use will be twice this */
-#define BUFFER_SIZE_MB 32
+const uint32_t BUFFER_SIZE_MB = 32;
 
 /*
  * pegh file format, numbers are inclusive 0-based byte array indices
@@ -69,12 +89,12 @@
 #define KEY_LEN 32
 
 /* 1 for file format version, 4 for N, 1 for r, 1 for p, 4 for block/buffer size */
-#define PRE_SALT_LEN 11
+const size_t PRE_SALT_LEN = 11;
 /* from libsodium's crypto_pwhash_scryptsalsa208sha256_SALTBYTES */
 #define SALT_LEN 32
 /* AES-GCM should only ever have an IV_LEN of 12 */
 #define IV_LEN 12
-#define GCM_TAG_LEN 16
+const size_t GCM_TAG_LEN = 16;
 
 /* libsodium only supports AES on specific platforms, this jazz is to fallback to openssl impls in those cases */
 typedef int (*gcm_func)(const unsigned char *, const size_t,
@@ -82,17 +102,7 @@ typedef int (*gcm_func)(const unsigned char *, const size_t,
     unsigned char *, unsigned char *
 );
 
-/* default of OpenSSL for now... */
-#if !defined(PEGH_OPENSSL) && !defined(PEGH_LIBSODIUM)
-#define PEGH_OPENSSL 1
-#endif
-
 #ifdef PEGH_OPENSSL
-
-#include <openssl/conf.h>
-#include <openssl/evp.h>
-#include <openssl/err.h>
-#include <openssl/rand.h>
 
 /* this is because we read up to buffer_size at once, and then send that value to openssl which uses int instead of size_t, limit of 2gb */
 static const size_t CHUNK_SIZE_MAX_OPENSSL = INT_MAX;
@@ -284,8 +294,6 @@ void wipe_memory(void * const ptr, const size_t len) {
 #endif /* PEGH_OPENSSL */
 
 #ifdef PEGH_LIBSODIUM
-
-#include <sodium.h>
 
 /*
  * unlike openssl, libsodium uses proper types, so we can go all the way up to the "aes-gcm-256 is still secure" limit of around 32gb
