@@ -515,10 +515,10 @@ int gcm_stream(const unsigned char *key, size_t buffer_size,
     if(buffer_size > CHUNK_SIZE_MAX) {
         if(NULL != err) {
 #ifdef PEGH_OPENSSL
-            fprintf(err, "due to openssl API limitation, buffer_size can at most be %ld\n", CHUNK_SIZE_MAX);
+            fprintf(err, "due to openssl API limitation, buffer_size can at most be %lu\n", CHUNK_SIZE_MAX);
 #endif
 #ifdef PEGH_LIBSODIUM
-            fprintf(err, "due to AES-256-GCM security constraints, buffer_size can at most be %ld\n", CHUNK_SIZE_MAX);
+            fprintf(err, "due to AES-256-GCM security constraints, buffer_size can at most be %lu\n", CHUNK_SIZE_MAX);
 #endif
         }
         return 0;
@@ -686,7 +686,7 @@ usage: pegh [options...] password\n\
     fprintf(stderr, "\
                only allocated after scrypt is finished so max usage will be\n\
                the highest of these only, not both combined,\n\
-               max: %ld, default: %d\n\
+               max: %lu, default: %d\n\
  -m <max_mb>   maximum megabytes of ram to use when deriving key from password\n\
                with scrypt, applies for encryption AND decryption, must\n\
                almost linearly scale with -N, if too low operation will fail,\n\
@@ -823,7 +823,7 @@ int main(int argc, char **argv)
             case 'c':
                 buffer_size = parse_int_arg(++optind, argc, argv) * 1024 * 1024;
                 if(buffer_size > CHUNK_SIZE_MAX) {
-                    fprintf(stderr, "Error: %s chunk size cannot exceed %ld megabytes\n", argv[optind - 1], CHUNK_SIZE_MAX / 1024 / 1024);
+                    fprintf(stderr, "Error: %s chunk size cannot exceed %lu megabytes\n", argv[optind - 1], CHUNK_SIZE_MAX / 1024 / 1024);
                     return help(2);
                 }
                 break;

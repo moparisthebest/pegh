@@ -5,7 +5,7 @@
 
 CFLAGS += -Wall -Wextra -Werror -std=c89 -pedantic \
        -Wstrict-prototypes -Wold-style-definition -Wconversion \
-       -Wno-missing-prototypes -Wno-missing-noreturn \
+       -Wno-missing-prototypes -Wno-missing-noreturn -Wno-format \
        -O3
 
 ifdef PEGH_OPENSSL
@@ -13,22 +13,22 @@ ifdef PEGH_OPENSSL
 ifdef PEGH_LIBSODIUM
 # both libsodium and openssl
 CFLAGS += -DPEGH_LIBSODIUM -DPEGH_OPENSSL
-LDFLAGS += -lsodium -lcrypto
+LDLIBS += -lsodium -lcrypto
 else
 # only openssl
 CFLAGS += -DPEGH_OPENSSL
-LDFLAGS += -lcrypto
+LDLIBS += -lcrypto
 endif
 
 else
 ifdef PEGH_LIBSODIUM
 # only libsodium
 CFLAGS += -DPEGH_LIBSODIUM
-LDFLAGS += -lsodium
+LDLIBS += -lsodium
 else
 # default of only openssl
 CFLAGS += -DPEGH_OPENSSL
-LDFLAGS += -lcrypto
+LDLIBS += -lcrypto
 endif
 endif
 

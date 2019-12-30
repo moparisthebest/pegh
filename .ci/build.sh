@@ -9,7 +9,7 @@ cd "$(dirname "$0")"
 apk add build-base clang bash libsodium-dev libsodium-static libressl-dev
 
 # first build for libressl, which doesn't have "EVP_PBE_scrypt" so can only be compiled with libsodium
-make clean all PEGH_LIBSODIUM=1 PEGH_OPENSSL=1 CC=clang LDFLAGS="-static -lcrypto" || clang pegh.c -DPEGH_LIBSODIUM -DPEGH_OPENSSL -static -lsodium -lcrypto -O3 -o pegh
+make clean all PEGH_LIBSODIUM=1 PEGH_OPENSSL=1 CC=clang LDFLAGS="-static"
 mv pegh pegh.static.libsodium-libressl
 
 # now remove libressl and install openssl
@@ -17,11 +17,11 @@ apk del libressl-dev
 apk add openssl-dev openssl-libs-static
 
 # gcc is apparantly incapable of building a static binary, even gcc -static helloworld.c ends up linked to libc, instead of solving, use clang
-make clean all PEGH_LIBSODIUM=1 CC=clang LDFLAGS="-static -lsodium" || clang pegh.c -DPEGH_LIBSODIUM -static -lsodium -O3 -o pegh
+make clean all PEGH_LIBSODIUM=1 CC=clang LDFLAGS="-static"
 mv pegh pegh.static.libsodium
-make clean all PEGH_OPENSSL=1 CC=clang LDFLAGS="-static -lcrypto" || clang pegh.c -DPEGH_OPENSSL -static -lcrypto -O3 -o pegh
+make clean all PEGH_OPENSSL=1 CC=clang LDFLAGS="-static"
 mv pegh pegh.static.openssl
-make clean all PEGH_LIBSODIUM=1 PEGH_OPENSSL=1 CC=clang LDFLAGS="-static -lcrypto" || clang pegh.c -DPEGH_LIBSODIUM -DPEGH_OPENSSL -static -lsodium -lcrypto -O3 -o pegh
+make clean all PEGH_LIBSODIUM=1 PEGH_OPENSSL=1 CC=clang LDFLAGS="-static"
 mv pegh pegh.static.libsodium-openssl
 
 ./pegh.static.libsodium-openssl -h

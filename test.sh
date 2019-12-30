@@ -18,15 +18,15 @@ set -euxo pipefail
 rm -f pegh
 
 # compile against openssl
-make PEGH_OPENSSL=1 || cc pegh.c -DPEGH_OPENSSL -lcrypto -O3 -o pegh
+make PEGH_OPENSSL=1 || cc -O3 -DPEGH_OPENSSL pegh.c -lcrypto -o pegh
 mv pegh pegh.openssl
 
 # compile against libsodium
-make PEGH_LIBSODIUM=1 || cc pegh.c -DPEGH_LIBSODIUM -lsodium -O3 -o pegh
+make PEGH_LIBSODIUM=1 || cc -O3 -DPEGH_LIBSODIUM pegh.c -lsodium -o pegh
 mv pegh pegh.libsodium
 
 # compile against both libsodium and openssl as a fallback for CPUs libsodium doesn't support
-make PEGH_LIBSODIUM=1 PEGH_OPENSSL=1 || cc pegh.c -DPEGH_LIBSODIUM -DPEGH_OPENSSL -lsodium -lcrypto -O3 -o pegh
+make PEGH_LIBSODIUM=1 PEGH_OPENSSL=1 || cc -O3 -DPEGH_LIBSODIUM -DPEGH_OPENSSL pegh.c -lsodium -lcrypto -o pegh
 mv pegh pegh.libsodium-openssl
 
 export key="$(< /dev/urandom tr -dc 'a-z0-9' | head -c12)"
