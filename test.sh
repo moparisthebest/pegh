@@ -55,10 +55,9 @@ test () {
     "$bin" -e "$key" -N 2000000 -i "$dummy_file" >/dev/null && echo "ERROR: N of 2 million without extra memory worked" && exit 1
     "$bin_decrypt" -d "$key" -N 2000000 -i "$dummy_file" >/dev/null && echo "ERROR: N of 2 million without extra memory worked" && exit 1
 
-    # todo: can we also make this the case for stdout? needs some buffering...
-    echo 'bad decryption should result in output file being deleted'
+    echo 'bad decryption bytes are never output, file should be 0 bytes'
     echo 'hopefully this doesnt make it to disk' | "$bin" "$key" | cat - <(echo -n a) | "$bin_decrypt" -d "$key" -o bla.txt && exit 1
-    [ -s bla.txt ] && echo "ERROR: bla.txt should not exist" && exit 1
+    [ -s bla.txt ] && echo "ERROR: bla.txt should be empty" && exit 1
     set -e
 }
 
