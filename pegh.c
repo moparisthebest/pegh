@@ -76,6 +76,12 @@
 #define IV_LEN 12
 #define GCM_TAG_LEN 16
 
+/* libsodium only supports AES on specific platforms, this jazz is to fallback to openssl impls in those cases */
+typedef int (*gcm_func)(const unsigned char *, const size_t,
+    const unsigned char *, const unsigned char *,
+    unsigned char *, unsigned char *
+);
+
 /* default of OpenSSL for now... */
 #if !defined(PEGH_OPENSSL) && !defined(PEGH_LIBSODIUM)
 #define PEGH_OPENSSL 1
@@ -104,7 +110,7 @@ static const size_t CHUNK_SIZE_MAX = INT_MAX;
  * ciphertext must have the capacity of at least plaintext_len
  * tag must have the capacity of at least GCM_TAG_LEN
  */
-int gcm_encrypt(const unsigned char *plaintext, const size_t plaintext_len,
+int gcm_encrypt_openssl(const unsigned char *plaintext, const size_t plaintext_len,
                 const unsigned char *key,
                 const unsigned char *iv,
                 unsigned char *ciphertext,
@@ -178,7 +184,7 @@ int gcm_encrypt(const unsigned char *plaintext, const size_t plaintext_len,
  * these will be written into:
  * plaintext must have the capacity of at least ciphertext_len
  */
-int gcm_decrypt(const unsigned char *ciphertext, const size_t ciphertext_len,
+int gcm_decrypt_openssl(const unsigned char *ciphertext, const size_t ciphertext_len,
                 const unsigned char *key,
                 const unsigned char *iv,
                 unsigned char *tag,
@@ -239,6 +245,10 @@ int gcm_decrypt(const unsigned char *ciphertext, const size_t ciphertext_len,
     return ret;
 }
 
+/* if both PEGH_OPENSSL and PEGH_LIBSODIUM are defined, we only want the AES funcs from OpenSSL */
+
+#ifndef PEGH_LIBSODIUM
+
 /* returns 1 on success, 0 on error */
 int scrypt_derive_key(char *password, size_t password_len,
          uint32_t scrypt_max_mem, uint32_t N,
@@ -269,11 +279,16 @@ void wipe_memory(void * const ptr, const size_t len) {
     OPENSSL_cleanse(ptr, len);
 }
 
-#endif
+#endif /* PEGH_LIBSODIUM */
+
+#endif /* PEGH_OPENSSL */
+
 #ifdef PEGH_LIBSODIUM
 
 #include <sodium.h>
 
+/* for now in hybrid mode lazily use OPENSSL's CHUNK_SIZE_MAX which is smaller, solution to make them the same coming soon */
+#ifndef PEGH_OPENSSL
 /* unlike openssl, libsodium uses proper types, so we can go all the way up to the "aes-gcm-256 is still secure" limit of around 32gb */
 /*
 // actually this is breaking on x86 and aarch64 where size_t is `unsigned int` and this overflows, how to handle???
@@ -281,6 +296,7 @@ static const size_t CHUNK_SIZE_MAX = 1024UL * 1024 * 1024 * 32;
 // for now, 4gb will do?
 */
 static const size_t CHUNK_SIZE_MAX = UINT_MAX;
+#endif /* PEGH_OPENSSL */
 
 /*
  * returns 1 on success, 0 on failure
@@ -295,7 +311,7 @@ static const size_t CHUNK_SIZE_MAX = UINT_MAX;
  * ciphertext must have the capacity of at least plaintext_len
  * tag must have the capacity of at least GCM_TAG_LEN
  */
-int gcm_encrypt(const unsigned char *plaintext, const size_t plaintext_len,
+int gcm_encrypt_libsodium(const unsigned char *plaintext, const size_t plaintext_len,
                 const unsigned char *key,
                 const unsigned char *iv,
                 unsigned char *ciphertext,
@@ -323,7 +339,7 @@ int gcm_encrypt(const unsigned char *plaintext, const size_t plaintext_len,
  * these will be written into:
  * plaintext must have the capacity of at least ciphertext_len
  */
-int gcm_decrypt(const unsigned char *ciphertext, const size_t ciphertext_len,
+int gcm_decrypt_libsodium(const unsigned char *ciphertext, const size_t ciphertext_len,
                 const unsigned char *key,
                 const unsigned char *iv,
                 unsigned char *tag,
@@ -382,6 +398,15 @@ void wipe_memory(void * const ptr, const size_t len) {
     sodium_memzero(ptr, len);
 }
 
+#endif /* PEGH_LIBSODIUM */
+
+/* always prefer libsodium AES if possible because it's faster */
+#ifdef PEGH_LIBSODIUM
+gcm_func gcm_encrypt = gcm_encrypt_libsodium;
+gcm_func gcm_decrypt = gcm_decrypt_libsodium;
+#elif PEGH_OPENSSL
+gcm_func gcm_encrypt = gcm_encrypt_openssl;
+gcm_func gcm_decrypt = gcm_decrypt_openssl;
 #endif
 
 /* returns 1 on success, 0 on failure */
@@ -738,10 +763,18 @@ int main(int argc, char **argv)
         return 2;
     }
     if (crypto_aead_aes256gcm_is_available() == 0) {
+#ifdef PEGH_OPENSSL
+        /* swap to OpenSSL AES which is always supported */
+        fprintf(stderr, "Warning: libsodium does not support AES-256-GCM on this CPU, falling back to openssl version instead...\n");
+        gcm_encrypt = gcm_encrypt_openssl;
+        gcm_decrypt = gcm_decrypt_openssl;
+#else
+        /* nothing we can do */
         fprintf(stderr, "Error: libsodium does not support AES-256-GCM on this CPU, compile/use openssl version?\n");
         return 2;
+#endif /* PEGH_OPENSSL */
     }
-#endif
+#endif /* PEGH_LIBSODIUM */
 
     for (optind = 1; optind < argc; ++optind) {
         if(strlen(argv[optind]) == 2 && argv[optind][0] == '-') {

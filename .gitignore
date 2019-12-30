@@ -1,6 +1,6 @@
 pegh
 pegh.exe
-pegh.libsodium
+pegh.libsodium*
 pegh.openssl
 bla.txt
 

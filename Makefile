@@ -9,13 +9,24 @@ CFLAGS += -Wall -Wextra -Werror -std=c89 -pedantic \
        -O3
 
 ifdef PEGH_OPENSSL
+
+ifdef PEGH_LIBSODIUM
+# both libsodium and openssl
+CFLAGS += -DPEGH_LIBSODIUM -DPEGH_OPENSSL
+LDFLAGS += -lsodium -lcrypto
+else
+# only openssl
 CFLAGS += -DPEGH_OPENSSL
 LDFLAGS += -lcrypto
+endif
+
 else
 ifdef PEGH_LIBSODIUM
+# only libsodium
 CFLAGS += -DPEGH_LIBSODIUM
 LDFLAGS += -lsodium
 else
+# default of only openssl
 CFLAGS += -DPEGH_OPENSSL
 LDFLAGS += -lcrypto
 endif

@@ -7,7 +7,7 @@ export dummy_mb="$1"
 [ "$dummy_file" = "" ] && export dummy_file='/tmp/randombytes'
 [ "$dummy_mb" = "" ] && export dummy_mb='100'
 
-[ "$TEST_BINS" = "" ] && TEST_BINS="./pegh.openssl ./pegh.libsodium"
+[ "$TEST_BINS" = "" ] && TEST_BINS="./pegh.openssl ./pegh.libsodium ./pegh.libsodium-universal-aes"
 
 set -euxo pipefail
 
@@ -24,6 +24,10 @@ mv pegh pegh.openssl
 # compile against libsodium
 make PEGH_LIBSODIUM=1 || cc pegh.c -DPEGH_LIBSODIUM -lsodium -O3 -o pegh
 mv pegh pegh.libsodium
+
+# compile against both libsodium and openssl as a fallback for CPUs libsodium doesn't support
+make PEGH_LIBSODIUM=1 PEGH_OPENSSL=1 || cc pegh.c -DPEGH_LIBSODIUM -DPEGH_OPENSSL -lsodium -lcrypto -O3 -o pegh
+mv pegh pegh.libsodium-universal-aes
 
 export key="$(< /dev/urandom tr -dc 'a-z0-9' | head -c12)"
 

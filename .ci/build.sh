@@ -14,6 +14,8 @@ make clean all PEGH_LIBSODIUM=1 CC=clang LDFLAGS="-static -lsodium" || clang peg
 mv pegh pegh.static.libsodium
 make clean all PEGH_OPENSSL=1 CC=clang LDFLAGS="-static -lcrypto" || clang pegh.c -DPEGH_OPENSSL -static -lcrypto -O3 -o pegh
 mv pegh pegh.static.openssl
+make clean all PEGH_LIBSODIUM=1 PEGH_OPENSSL=1 CC=clang LDFLAGS="-static -lcrypto" || clang pegh.c -DPEGH_LIBSODIUM -DPEGH_OPENSSL -static -lsodium -lcrypto -O3 -o pegh
+mv pegh pegh.static.libsodium-universal-aes
 
 ls -lah pegh.static.*
 
@@ -31,11 +33,11 @@ if ./pegh.static.libsodium -h 2>&1 >/dev/null | grep '^Error: libsodium'
 then
     echo "CPU does not have AES support so can't run libsodium version"
     # no aes support
-    export TEST_BINS="./pegh.static.openssl ./pegh.openssl"
+    export TEST_BINS="./pegh.static.openssl ./pegh.openssl ./pegh.static.libsodium-universal-aes ./pegh.libsodium-universal-aes"
 else
     echo "CPU has AES support so can run libsodium version"
     # we can test everything
-    export TEST_BINS="./pegh.static.openssl ./pegh.openssl ./pegh.libsodium ./pegh.static.libsodium"
+    export TEST_BINS="./pegh.static.openssl ./pegh.openssl ./pegh.static.libsodium-universal-aes ./pegh.libsodium-universal-aes ./pegh.libsodium ./pegh.static.libsodium"
 fi
 set -e
 
