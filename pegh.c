@@ -92,20 +92,29 @@ const uint32_t BUFFER_SIZE_MB = 32;
 const size_t PRE_SALT_LEN = 11;
 /* from libsodium's crypto_pwhash_scryptsalsa208sha256_SALTBYTES */
 #define SALT_LEN 32
-/* AES-GCM should only ever have an IV_LEN of 12 */
+/* AES-GCM/Chacha20-Poly1305 should only ever have an IV_LEN of 12 */
 #define IV_LEN 12
-const size_t GCM_TAG_LEN = 16;
+const size_t AEAD_TAG_LEN = 16;
 
 /* libsodium only supports AES on specific platforms, this jazz is to fallback to openssl impls in those cases */
-typedef int (*gcm_func)(const unsigned char *, const size_t,
+typedef int (*aead_func)(const unsigned char *, const size_t,
     const unsigned char *, const unsigned char *,
     unsigned char *, unsigned char *
+);
+
+typedef int (*stream_func)(const aead_func, const unsigned char *, unsigned char *, size_t,
+        unsigned char *, unsigned char *,
+        FILE *, FILE *, FILE *
 );
 
 #ifdef PEGH_OPENSSL
 
 /* this is because we read up to buffer_size at once, and then send that value to openssl which uses int instead of size_t, limit of 2gb */
-static const size_t CHUNK_SIZE_MAX_OPENSSL = INT_MAX;
+static const size_t CHUNK_SIZE_MAX_OPENSSL_GCM = INT_MAX;
+/* if libsodium is around we use it's chacha impl */
+#ifndef PEGH_LIBSODIUM
+static const size_t CHUNK_SIZE_MAX_CHACHA = INT_MAX;
+#endif
 
 /*
  * returns 1 on success, 0 on failure
@@ -118,9 +127,9 @@ static const size_t CHUNK_SIZE_MAX_OPENSSL = INT_MAX;
  *
  * these will be written into:
  * ciphertext must have the capacity of at least plaintext_len
- * tag must have the capacity of at least GCM_TAG_LEN
+ * tag must have the capacity of at least AEAD_TAG_LEN
  */
-int gcm_encrypt_openssl(const unsigned char *plaintext, const size_t plaintext_len,
+int aead_encrypt_openssl(const EVP_CIPHER *type, const unsigned char *plaintext, const size_t plaintext_len,
                 const unsigned char *key,
                 const unsigned char *iv,
                 unsigned char *ciphertext,
@@ -136,11 +145,11 @@ int gcm_encrypt_openssl(const unsigned char *plaintext, const size_t plaintext_l
             break;
 
         /* Initialise the encryption operation. */
-        if(1 != EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL))
+        if(1 != EVP_EncryptInit_ex(ctx, type, NULL, NULL, NULL))
             break;
 
         /* Setting IV length is not necessary because the default of 12 bytes (96 bits) will be used
-        if(!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, IV_LEN, NULL))
+        if(!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, IV_LEN, NULL))
             break;
         */
 
@@ -171,7 +180,7 @@ int gcm_encrypt_openssl(const unsigned char *plaintext, const size_t plaintext_l
             break;
 
         /* Get the tag */
-        ret = EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, GCM_TAG_LEN, tag);
+        ret = EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, AEAD_TAG_LEN, tag);
     } while(0);
 
     /* Clean up */
@@ -189,12 +198,12 @@ int gcm_encrypt_openssl(const unsigned char *plaintext, const size_t plaintext_l
  * ciphertext_len
  * key must be length KEY_LEN
  * iv must be length IV_LEN
- * tag must be length GCM_TAG_LEN
+ * tag must be length AEAD_TAG_LEN
  *
  * these will be written into:
  * plaintext must have the capacity of at least ciphertext_len
  */
-int gcm_decrypt_openssl(const unsigned char *ciphertext, const size_t ciphertext_len,
+int aead_decrypt_openssl(const EVP_CIPHER *type, const unsigned char *ciphertext, const size_t ciphertext_len,
                 const unsigned char *key,
                 const unsigned char *iv,
                 unsigned char *tag,
@@ -210,11 +219,11 @@ int gcm_decrypt_openssl(const unsigned char *ciphertext, const size_t ciphertext
             break;
 
         /* Initialise the decryption operation. */
-        if(!EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL))
+        if(!EVP_DecryptInit_ex(ctx, type, NULL, NULL, NULL))
             break;
 
         /* Setting IV length is not necessary because the default of 12 bytes (96 bits) will be used
-        if(!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, IV_LEN, NULL))
+        if(!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_IVLEN, IV_LEN, NULL))
             break;
         */
 
@@ -238,7 +247,7 @@ int gcm_decrypt_openssl(const unsigned char *ciphertext, const size_t ciphertext
         */
 
         /* Set expected tag value. Works in OpenSSL 1.0.1d and later */
-        if(!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, GCM_TAG_LEN, tag))
+        if(!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, AEAD_TAG_LEN, tag))
             break;
 
         /*
@@ -255,9 +264,55 @@ int gcm_decrypt_openssl(const unsigned char *ciphertext, const size_t ciphertext
     return ret;
 }
 
+int gcm_encrypt_openssl(const unsigned char *plaintext, const size_t plaintext_len,
+                const unsigned char *key,
+                const unsigned char *iv,
+                unsigned char *ciphertext,
+                unsigned char *tag
+               ) {
+    return aead_encrypt_openssl(EVP_aes_256_gcm(), plaintext, plaintext_len,
+                key, iv,
+                ciphertext, tag);
+}
+
+int gcm_decrypt_openssl(const unsigned char *ciphertext, const size_t ciphertext_len,
+                const unsigned char *key,
+                const unsigned char *iv,
+                unsigned char *tag,
+                unsigned char *plaintext
+               )
+{
+    return aead_decrypt_openssl(EVP_aes_256_gcm(), ciphertext, ciphertext_len,
+                key, iv, tag,
+                plaintext);
+}
+
 /* if both PEGH_OPENSSL and PEGH_LIBSODIUM are defined, we only want the AES funcs from OpenSSL */
 
 #ifndef PEGH_LIBSODIUM
+
+int chacha_encrypt(const unsigned char *plaintext, const size_t plaintext_len,
+                const unsigned char *key,
+                const unsigned char *iv,
+                unsigned char *ciphertext,
+                unsigned char *tag
+               ) {
+    return aead_encrypt_openssl(EVP_chacha20_poly1305(), plaintext, plaintext_len,
+                key, iv,
+                ciphertext, tag);
+}
+
+int chacha_decrypt(const unsigned char *ciphertext, const size_t ciphertext_len,
+                const unsigned char *key,
+                const unsigned char *iv,
+                unsigned char *tag,
+                unsigned char *plaintext
+               )
+{
+    return aead_decrypt_openssl(EVP_chacha20_poly1305(), ciphertext, ciphertext_len,
+                key, iv, tag,
+                plaintext);
+}
 
 /* returns 1 on success, 0 on error */
 int scrypt_derive_key(char *password, size_t password_len,
@@ -296,13 +351,17 @@ void wipe_memory(void * const ptr, const size_t len) {
 #ifdef PEGH_LIBSODIUM
 
 /*
- * unlike openssl, libsodium uses proper types, so we can go all the way up to the "aes-gcm-256 is still secure" limit of around 32gb
+ * unlike openssl, libsodium uses proper types, so we can go all the way up to the "still secure" limit of around 64gb for aes and 256gb for chacha
  * but 32-bit systems have SIZE_MAX smaller than that, so special case that here
  */
-#if (1024UL * 1024 * 1024 * 32) > SIZE_MAX
-static const size_t CHUNK_SIZE_MAX_LIBSODIUM = SIZE_MAX;
+#if 274877906880 > SIZE_MAX
+static const size_t CHUNK_SIZE_MAX_LIBSODIUM_GCM = SIZE_MAX;
+static const size_t CHUNK_SIZE_MAX_CHACHA = SIZE_MAX;
 #else
-static const size_t CHUNK_SIZE_MAX_LIBSODIUM = 1024UL * 1024 * 1024 * 32;
+/* https://crypto.stackexchange.com/a/22643 */
+static const size_t CHUNK_SIZE_MAX_LIBSODIUM_GCM = 68719476704; /* (2^36)-32 or slightly less than 64gb */
+/* https://libsodium.gitbook.io/doc/secret-key_cryptography/aead/chacha20-poly1305/ietf_chacha20-poly1305_construction */
+static const size_t CHUNK_SIZE_MAX_CHACHA = 274877906880; /* 64*(2^32)-64 or slightly less than 256gb */
 #endif
 
 /*
@@ -316,7 +375,7 @@ static const size_t CHUNK_SIZE_MAX_LIBSODIUM = 1024UL * 1024 * 1024 * 32;
  *
  * these will be written into:
  * ciphertext must have the capacity of at least plaintext_len
- * tag must have the capacity of at least GCM_TAG_LEN
+ * tag must have the capacity of at least AEAD_TAG_LEN
  */
 int gcm_encrypt_libsodium(const unsigned char *plaintext, const size_t plaintext_len,
                 const unsigned char *key,
@@ -341,7 +400,7 @@ int gcm_encrypt_libsodium(const unsigned char *plaintext, const size_t plaintext
  * ciphertext_len
  * key must be length KEY_LEN
  * iv must be length IV_LEN
- * tag must be length GCM_TAG_LEN
+ * tag must be length AEAD_TAG_LEN
  *
  * these will be written into:
  * plaintext must have the capacity of at least ciphertext_len
@@ -354,6 +413,62 @@ int gcm_decrypt_libsodium(const unsigned char *ciphertext, const size_t cipherte
                )
 {
     return crypto_aead_aes256gcm_decrypt_detached(plaintext,
+                                  NULL,
+                                  ciphertext, (size_t) ciphertext_len,
+                                  tag,
+                                  NULL, 0,
+                                  iv, key) != 0 ? 0 : 1;
+}
+
+/*
+ * returns 1 on success, 0 on failure
+ *
+ * these will be read from:
+ * plaintext
+ * plaintext_len
+ * key must be length KEY_LEN
+ * iv must be length IV_LEN
+ *
+ * these will be written into:
+ * ciphertext must have the capacity of at least plaintext_len
+ * tag must have the capacity of at least AEAD_TAG_LEN
+ */
+int chacha_encrypt(const unsigned char *plaintext, const size_t plaintext_len,
+                const unsigned char *key,
+                const unsigned char *iv,
+                unsigned char *ciphertext,
+                unsigned char *tag
+               )
+{
+    crypto_aead_chacha20poly1305_ietf_encrypt_detached(ciphertext,
+                                           tag, NULL,
+                              plaintext, plaintext_len,
+                              NULL, 0,
+                              NULL, iv, key);
+    return 1;
+}
+
+/*
+ * returns 1 on success, 0 on failure
+ *
+ * these will be read from:
+ * ciphertext
+ * ciphertext_len
+ * key must be length KEY_LEN
+ * iv must be length IV_LEN
+ * tag must be length AEAD_TAG_LEN
+ *
+ * these will be written into:
+ * plaintext must have the capacity of at least ciphertext_len
+ */
+int chacha_decrypt(const unsigned char *ciphertext, const size_t ciphertext_len,
+                const unsigned char *key,
+                const unsigned char *iv,
+                unsigned char *tag,
+                unsigned char *plaintext
+               )
+{
+    return crypto_aead_chacha20poly1305_ietf_decrypt_detached(plaintext,
                                   NULL,
                                   ciphertext, (size_t) ciphertext_len,
                                   tag,
@@ -417,14 +532,14 @@ void wipe_memory(void * const ptr, const size_t len) {
 #define PEGH_CONST
 #endif
 
-static PEGH_CONST gcm_func gcm_encrypt = gcm_encrypt_libsodium;
-static PEGH_CONST gcm_func gcm_decrypt = gcm_decrypt_libsodium;
-static PEGH_CONST size_t CHUNK_SIZE_MAX = CHUNK_SIZE_MAX_LIBSODIUM;
+static PEGH_CONST aead_func gcm_encrypt = gcm_encrypt_libsodium;
+static PEGH_CONST aead_func gcm_decrypt = gcm_decrypt_libsodium;
+static PEGH_CONST size_t CHUNK_SIZE_MAX_GCM = CHUNK_SIZE_MAX_LIBSODIUM_GCM;
 
 #elif PEGH_OPENSSL
-static const gcm_func gcm_encrypt = gcm_encrypt_openssl;
-static const gcm_func gcm_decrypt = gcm_decrypt_openssl;
-static const size_t CHUNK_SIZE_MAX = CHUNK_SIZE_MAX_OPENSSL;
+static const aead_func gcm_encrypt = gcm_encrypt_openssl;
+static const aead_func gcm_decrypt = gcm_decrypt_openssl;
+static const size_t CHUNK_SIZE_MAX_GCM = CHUNK_SIZE_MAX_OPENSSL_GCM;
 #endif
 
 /* returns 1 on success, 0 on failure */
@@ -447,7 +562,7 @@ int iv_increment_forbid_zero(unsigned char *n, const size_t nlen, FILE *err)
 }
 
 /* returns 1 on success, 0 on failure */
-int gcm_encrypt_stream(const unsigned char *key, unsigned char *iv, size_t buffer_size,
+int encrypt_stream(const aead_func encrypt, const unsigned char *key, unsigned char *iv, size_t buffer_size,
         unsigned char *plaintext, unsigned char *ciphertext,
         FILE *in, FILE *out, FILE *err
        ) {
@@ -455,37 +570,37 @@ int gcm_encrypt_stream(const unsigned char *key, unsigned char *iv, size_t buffe
 
     while ((plaintext_read = fread(plaintext, 1, buffer_size, in)) > 0) {
 
-        if(1 != gcm_encrypt(plaintext, plaintext_read, key, iv, ciphertext, ciphertext + plaintext_read))
+        if(1 != encrypt(plaintext, plaintext_read, key, iv, ciphertext, ciphertext + plaintext_read))
             return 0;
 
         if(1 != iv_increment_forbid_zero(iv, IV_LEN, err))
             return 0;
 
-        fwrite(ciphertext, 1, plaintext_read + GCM_TAG_LEN, out);
+        fwrite(ciphertext, 1, plaintext_read + AEAD_TAG_LEN, out);
     }
     return 1;
 }
 
 /* returns 1 on success, 0 on failure */
-int gcm_decrypt_stream(const unsigned char *key, unsigned char *iv, size_t buffer_size,
+int decrypt_stream(const aead_func decrypt, const unsigned char *key, unsigned char *iv, size_t buffer_size,
         unsigned char *plaintext, unsigned char *ciphertext,
         FILE *in, FILE *out, FILE *err
        ) {
     size_t ciphertext_read;
 
-    buffer_size += GCM_TAG_LEN;
+    buffer_size += AEAD_TAG_LEN;
 
     while ((ciphertext_read = fread(ciphertext, 1, buffer_size, in)) > 0) {
 
-        if(ciphertext_read < GCM_TAG_LEN) {
+        if(ciphertext_read < AEAD_TAG_LEN) {
             if(NULL != err)
                 fprintf(err, "File too small for decryption, truncated?\n");
             return 0;
         }
 
-        ciphertext_read -= GCM_TAG_LEN;
+        ciphertext_read -= AEAD_TAG_LEN;
 
-        if(1 != gcm_decrypt(ciphertext, ciphertext_read, key, iv, ciphertext + ciphertext_read, plaintext))
+        if(1 != decrypt(ciphertext, ciphertext_read, key, iv, ciphertext + ciphertext_read, plaintext))
                 return 0;
 
         if(1 != iv_increment_forbid_zero(iv, IV_LEN, err))
@@ -508,9 +623,8 @@ int gcm_decrypt_stream(const unsigned char *key, unsigned char *iv, size_t buffe
  * in/out must be set
  * err can be NULL in which case no messages are printed
  */
-int gcm_stream(const unsigned char *key, size_t buffer_size,
-                int decrypt,
-                FILE *in, FILE *out, FILE *err
+int stream(const stream_func crypt_stream, const aead_func aead, unsigned char *key, size_t buffer_size,
+           FILE *in, FILE *out, FILE *err
 )
 {
     /* this is ok because the random salt makes the key random, and we increment this for encryption operation */
@@ -518,15 +632,25 @@ int gcm_stream(const unsigned char *key, size_t buffer_size,
     /* these are actually mallocd and freed */
     unsigned char *plaintext = NULL, *ciphertext = NULL;
 
-    int exit_code = 0;
+    size_t chunk_size_max;
+    int exit_code = 0, is_gcm;
 
-    if(buffer_size > CHUNK_SIZE_MAX) {
+    /* check chunk size */
+    is_gcm = aead == gcm_decrypt || aead == gcm_encrypt;
+    chunk_size_max = is_gcm ? CHUNK_SIZE_MAX_GCM : CHUNK_SIZE_MAX_CHACHA;
+    if(buffer_size > chunk_size_max) {
         if(NULL != err) {
-#ifdef PEGH_OPENSSL
-            fprintf(err, "due to openssl API limitation, buffer_size can at most be %lu\n", CHUNK_SIZE_MAX);
-#endif
-#ifdef PEGH_LIBSODIUM
-            fprintf(err, "due to AES-256-GCM security constraints, buffer_size can at most be %lu\n", CHUNK_SIZE_MAX);
+#if defined(PEGH_OPENSSL) && defined(PEGH_LIBSODIUM)
+            /* the ugliest branch, openssl limits only apply if it's GCM and we are using openssl's impl */
+            if(is_gcm && gcm_decrypt == gcm_decrypt_openssl) {
+                fprintf(err, "due to openssl API limitation, buffer_size can at most be %lu\n", chunk_size_max);
+            } else {
+                fprintf(err, "due to algorithm security constraints, buffer_size can at most be %lu\n", chunk_size_max);
+            }
+#elif defined(PEGH_OPENSSL)
+            fprintf(err, "due to openssl API limitation, buffer_size can at most be %lu\n", chunk_size_max);
+#elif defined(PEGH_LIBSODIUM)
+            fprintf(err, "due to algorithm security constraints, buffer_size can at most be %lu\n", chunk_size_max);
 #endif
         }
         return 0;
@@ -538,7 +662,7 @@ int gcm_stream(const unsigned char *key, size_t buffer_size,
             fprintf(err, "plaintext memory allocation failed\n");
         return 0;
     }
-    ciphertext = malloc(buffer_size + GCM_TAG_LEN);
+    ciphertext = malloc(buffer_size + AEAD_TAG_LEN);
     if(!ciphertext) {
         if(NULL != err)
             fprintf(err, "ciphertext memory allocation failed\n");
@@ -546,8 +670,7 @@ int gcm_stream(const unsigned char *key, size_t buffer_size,
         return 0;
     }
 
-    exit_code = decrypt ? gcm_decrypt_stream(key, iv, buffer_size, plaintext, ciphertext, in, out, err) :
-                          gcm_encrypt_stream(key, iv, buffer_size, plaintext, ciphertext, in, out, err);
+    exit_code = crypt_stream(aead, key, iv, buffer_size, plaintext, ciphertext, in, out, err);
 
     free(plaintext);
     free(ciphertext);
@@ -557,7 +680,7 @@ int gcm_stream(const unsigned char *key, size_t buffer_size,
         /* print openssl errors */
         ERR_print_errors_fp(err);
 #endif
-        fprintf(err, "%scryption failed\n", decrypt ? "de" : "en");
+        fprintf(err, "%scryption failed\n", crypt_stream == decrypt_stream ? "de" : "en");
     }
 
     return exit_code;
@@ -580,10 +703,10 @@ void write_uint32_big_endian(uint32_t val, unsigned char *buf) {
 }
 
 /* returns 1 on success, 0 on failure */
-int scrypt_derive_key_gcm_stream(char *password,
+int scrypt_derive_key_stream(const stream_func crypt_stream, const aead_func aead, char *password,
          uint32_t scrypt_max_mem, size_t buffer_size,
          FILE *in, FILE *out, FILE *err,
-         uint32_t N, uint8_t r, uint8_t p, unsigned char *salt, int decrypt) {
+         uint32_t N, uint8_t r, uint8_t p, unsigned char *salt) {
     unsigned char key[KEY_LEN] = {0};
     int ret;
     size_t password_len;
@@ -594,22 +717,56 @@ int scrypt_derive_key_gcm_stream(char *password,
     wipe_memory(password, password_len);
 
     if(ret == 1)
-        ret = gcm_stream(key, buffer_size, decrypt, in, out, err);
+        ret = stream(crypt_stream, aead, key, buffer_size, in, out, err);
 
     wipe_memory(key, KEY_LEN);
     return ret;
 }
 
 /* returns 1 on success, 0 on failure */
+int check_version(uint8_t version, FILE *err) {
+    if(version != 0 && version != 1) {
+        fprintf(stderr, "Error: unsupported file format version %d, we only support version 0 (AES-256-GCM) and 1 (Chacha20-Poly1305)\n", version);
+        return 0;
+    }
+#ifdef PEGH_LIBSODIUM
+    else if (version == 0 && crypto_aead_aes256gcm_is_available() == 0) {
+        /* AES encrypted but libsodium/hardware AES is not available */
+#ifdef PEGH_OPENSSL
+        /* swap to OpenSSL AES which is always supported */
+        if(NULL != err)
+            fprintf(err, "Warning: libsodium does not support AES-256-GCM on this CPU, falling back to openssl version instead...\n");
+        gcm_encrypt = gcm_encrypt_openssl;
+        gcm_decrypt = gcm_decrypt_openssl;
+        CHUNK_SIZE_MAX_GCM = CHUNK_SIZE_MAX_OPENSSL_GCM;
+#else
+        /* nothing we can do */
+        fprintf(stderr, "Error: libsodium does not support AES-256-GCM on this CPU, compile/use openssl version?\n");
+        return 0;
+#endif /* PEGH_OPENSSL */
+    }
+#endif /* PEGH_LIBSODIUM */
+    /* silence unused-parameter warning */
+    (void)err;
+    return 1;
+}
+
+/* returns 1 on success, 0 on failure */
 int pegh_encrypt(char *password,
          uint32_t scrypt_max_mem, size_t buffer_size,
          FILE *in, FILE *out, FILE *err,
+         uint8_t version,
          uint32_t N, uint8_t r, uint8_t p)
 {
     unsigned char salt[SALT_LEN] = {0};
 
+    if(1 != check_version(version, err)) {
+        fprintf(stderr, "Error: encryption aborting, try version 1 (Chacha20-Poly1305) which is universally supported\n");
+        return 0;
+    }
+
     /* first write the version and parameters */
-    salt[0] = 0;
+    salt[0] = version;
     write_uint32_big_endian(N, salt+1);
     salt[5] = r;
     salt[6] = p;
@@ -628,7 +785,7 @@ int pegh_encrypt(char *password,
     }
     fwrite(salt, 1, SALT_LEN, out);
 
-    return scrypt_derive_key_gcm_stream(password, scrypt_max_mem, buffer_size, in, out, err, N, r, p, salt, 0);
+    return scrypt_derive_key_stream(encrypt_stream, version == 0 ? gcm_encrypt : chacha_encrypt, password, scrypt_max_mem, buffer_size, in, out, err, N, r, p, salt);
 }
 
 /* returns 1 on success, 0 on failure */
@@ -641,7 +798,7 @@ int pegh_decrypt(char *password,
     size_t header_read, buffer_size;
 
     uint32_t N;
-    uint8_t r, p;
+    uint8_t version, r, p;
 
     /* first read the version and parameters */
     header_read = fread(salt, 1, PRE_SALT_LEN, in);
@@ -650,9 +807,9 @@ int pegh_decrypt(char *password,
             fprintf(err, "File too small for decryption, invalid header?\n");
         return 0;
     }
-    if(salt[0] != 0) {
-        if(NULL != err)
-            fprintf(err, "unsupported file format version %d, we only support version 0\n", salt[0]);
+    version = salt[0];
+    if(1 != check_version(version, err)) {
+        fprintf(stderr, "Error: decryption aborting, this file cannot be decrypted with this version/CPU\n");
         return 0;
     }
     N = read_uint32_big_endian(salt+1);
@@ -673,7 +830,8 @@ int pegh_decrypt(char *password,
         return 0;
     }
 
-    return scrypt_derive_key_gcm_stream(password, scrypt_max_mem, buffer_size, in, out, err, N, r, p, salt, 1);
+    return scrypt_derive_key_stream(decrypt_stream, version == 0 ? gcm_decrypt : chacha_decrypt,
+                                    password, scrypt_max_mem, buffer_size, in, out, err, N, r, p, salt);
 }
 
 int help(int exit_code) {
@@ -694,11 +852,11 @@ usage: pegh [options...] password\n\
     fprintf(stderr, "\
                only allocated after scrypt is finished so max usage will be\n\
                the highest of these only, not both combined,\n\
-               max: %lu, default: %d\n\
+               max: %lu (AES-256-GCM) or %lu (Chacha20-Poly1305), default: %d\n\
  -m <max_mb>   maximum megabytes of ram to use when deriving key from password\n\
                with scrypt, applies for encryption AND decryption, must\n\
                almost linearly scale with -N, if too low operation will fail,\n\
-               default: %d\n", CHUNK_SIZE_MAX / 1024 / 1024, BUFFER_SIZE_MB, SCRYPT_MAX_MEM / 1024 / 1024);
+               default: %d\n", CHUNK_SIZE_MAX_GCM / 1024 / 1024, CHUNK_SIZE_MAX_CHACHA / 1024 / 1024, BUFFER_SIZE_MB, SCRYPT_MAX_MEM / 1024 / 1024);
     fprintf(stderr, "\
  -N <num>      scrypt parameter N, only applies for encryption, default %d\n\
                this is rounded up to the next highest power of 2\n\
@@ -767,33 +925,13 @@ uint32_t next_highest_power_of_2(uint32_t v) {
 /* returns 0 on success, 1 on openssl failure, 2 on other failure */
 int main(int argc, char **argv)
 {
-    int optind, decrypt = 0, append = 0, exit_code = 2;
+    int optind, decrypt = 0, append = 0, exit_code = 2, version = -1;
     char *password = NULL;
     uint32_t N = SCRYPT_N, scrypt_max_mem = SCRYPT_MAX_MEM, buffer_size = BUFFER_SIZE_MB * 1024 * 1024, scale = 1;
     uint8_t r = SCRYPT_R, p = SCRYPT_P;
 
     FILE *in = stdin, *out = stdout, *err = stderr;
     char *in_filename = NULL, *out_filename = NULL;
-
-#ifdef PEGH_LIBSODIUM
-    if (sodium_init() == -1) {
-        fprintf(stderr, "Error: libsodium could not be initialized, compile/use openssl version?\n");
-        return 2;
-    }
-    if (crypto_aead_aes256gcm_is_available() == 0) {
-#ifdef PEGH_OPENSSL
-        /* swap to OpenSSL AES which is always supported */
-        fprintf(stderr, "Warning: libsodium does not support AES-256-GCM on this CPU, falling back to openssl version instead...\n");
-        gcm_encrypt = gcm_encrypt_openssl;
-        gcm_decrypt = gcm_decrypt_openssl;
-        CHUNK_SIZE_MAX = CHUNK_SIZE_MAX_OPENSSL;
-#else
-        /* nothing we can do */
-        fprintf(stderr, "Error: libsodium does not support AES-256-GCM on this CPU, compile/use openssl version?\n");
-        return 2;
-#endif /* PEGH_OPENSSL */
-    }
-#endif /* PEGH_LIBSODIUM */
 
     for (optind = 1; optind < argc; ++optind) {
         if(strlen(argv[optind]) == 2 && argv[optind][0] == '-') {
@@ -830,10 +968,6 @@ int main(int argc, char **argv)
                 break;
             case 'c':
                 buffer_size = parse_int_arg(++optind, argc, argv) * 1024 * 1024;
-                if(buffer_size > CHUNK_SIZE_MAX) {
-                    fprintf(stderr, "Error: %s chunk size cannot exceed %lu megabytes\n", argv[optind - 1], CHUNK_SIZE_MAX / 1024 / 1024);
-                    return help(2);
-                }
                 break;
             case 'm':
                 scrypt_max_mem = parse_int_arg(++optind, argc, argv) * 1024 * 1024;
@@ -852,6 +986,9 @@ int main(int argc, char **argv)
                 break;
             case 'q':
                 err = NULL;
+                break;
+            case 'v':
+                version = parse_byte_arg(++optind, argc, argv);
                 break;
             case 'V':
                 fprintf(stderr, "pegh %s\nformat versions supported: 0\n", PEGH_VERSION);
@@ -893,6 +1030,13 @@ int main(int argc, char **argv)
     return 0;
     */
 
+#ifdef PEGH_LIBSODIUM
+    if (sodium_init() == -1) {
+        fprintf(stderr, "Error: libsodium could not be initialized, compile/use openssl version?\n");
+        return 2;
+    }
+#endif /* PEGH_LIBSODIUM */
+
     if(NULL != in_filename) {
         in = fopen(in_filename, "rb");
         if(!in) {
@@ -912,8 +1056,31 @@ int main(int argc, char **argv)
 
     if(decrypt)
         exit_code = pegh_decrypt(password, scrypt_max_mem, buffer_size, in, out, err);
-    else
-        exit_code = pegh_encrypt(password, scrypt_max_mem, buffer_size, in, out, err, N, r, p);
+    else {
+        if(-1 == version) {
+            /* they left this as default, so attempt to pick best (fastest) version */
+#ifdef PEGH_LIBSODIUM
+            /* libsodium is easy, it only supports AES if it is CPU hardware accelerated,
+             * so if it is AES is fastest, otherwise must use Chacha20
+             */
+            version = crypto_aead_aes256gcm_is_available() == 0 ? 1 : 0;
+#elif defined(PEGH_OPENSSL)
+            /* OpenSSL is NOT easy, ideally we'd also pick AES if hardware accelerated,
+             * and Chacha20 otherwise, there is *a* way https://stackoverflow.com/a/25284682
+             * but not a good/supported/standard way, for now just assume AES is faster on
+             * 64-bit platforms???
+             */
+#if (1024UL * 1024 * 1024 * 32) > SIZE_MAX
+            /* small SIZE_MAX, Chacha20 */
+            version = 1;
+#else
+            /* greated than 32gb SIZE_MAX, AES */
+            version = 0;
+#endif
+#endif /* PEGH_OPENSSL */
+        }
+        exit_code = pegh_encrypt(password, scrypt_max_mem, buffer_size, in, out, err, (uint8_t) version, N, r, p);
+    }
 
     if(NULL != in_filename)
         fclose(in);
