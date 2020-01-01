@@ -730,9 +730,10 @@ int check_version(uint8_t version, FILE *err) {
         return 0;
     }
 #ifdef PEGH_LIBSODIUM
-    else if (version == 0 && crypto_aead_aes256gcm_is_available() == 0) {
-        /* AES encrypted but libsodium/hardware AES is not available */
+    /* check for AES encrypted but libsodium/hardware AES is not available */
 #ifdef PEGH_OPENSSL
+    /* if we've already checked/set this, don't again */
+    else if (gcm_encrypt != gcm_encrypt_openssl && version == 0 && crypto_aead_aes256gcm_is_available() == 0) {
         /* swap to OpenSSL AES which is always supported */
         if(NULL != err)
             fprintf(err, "Warning: libsodium does not support AES-256-GCM on this CPU, falling back to openssl version instead...\n");
@@ -740,9 +741,10 @@ int check_version(uint8_t version, FILE *err) {
         gcm_decrypt = gcm_decrypt_openssl;
         CHUNK_SIZE_MAX_GCM = CHUNK_SIZE_MAX_OPENSSL_GCM;
 #else
+    else if (version == 0 && crypto_aead_aes256gcm_is_available() == 0) {
         /* nothing we can do */
         fprintf(stderr, "Error: libsodium does not support AES-256-GCM on this CPU, compile/use openssl version?\n");
-        return 0;
+        return 19;
 #endif /* PEGH_OPENSSL */
     }
 #endif /* PEGH_LIBSODIUM */
@@ -795,6 +797,8 @@ int pegh_decrypt(char *password,
 {
     unsigned char salt[SALT_LEN] = {0};
 
+    int version_exit_code;
+
     size_t header_read, buffer_size;
 
     uint32_t N;
@@ -808,9 +812,9 @@ int pegh_decrypt(char *password,
         return 0;
     }
     version = salt[0];
-    if(1 != check_version(version, err)) {
+    if(1 != (version_exit_code = check_version(version, err))) {
         fprintf(stderr, "Error: decryption aborting, this file cannot be decrypted with this version/CPU\n");
-        return 0;
+        return version_exit_code;
     }
     N = read_uint32_big_endian(salt+1);
     r = salt[5];
@@ -922,7 +926,7 @@ uint32_t next_highest_power_of_2(uint32_t v) {
     return ++v;
 }
 
-/* returns 0 on success, 1 on openssl failure, 2 on other failure */
+/* returns 0 on success, 1 on cryptography failure, 19 on "libsodium only and CPU does not support AES" error, 2 on other failure */
 int main(int argc, char **argv)
 {
     int optind, decrypt = 0, append = 0, exit_code = 2, version = -1;
@@ -932,6 +936,13 @@ int main(int argc, char **argv)
 
     FILE *in = stdin, *out = stdout, *err = stderr;
     char *in_filename = NULL, *out_filename = NULL;
+
+#ifdef PEGH_LIBSODIUM
+    if (sodium_init() == -1) {
+        fprintf(stderr, "Error: libsodium could not be initialized, compile/use openssl version?\n");
+        return 1;
+    }
+#endif /* PEGH_LIBSODIUM */
 
     for (optind = 1; optind < argc; ++optind) {
         if(strlen(argv[optind]) == 2 && argv[optind][0] == '-') {
@@ -988,10 +999,27 @@ int main(int argc, char **argv)
                 err = NULL;
                 break;
             case 'v':
-                version = parse_byte_arg(++optind, argc, argv);
+                if(++optind >= argc) {
+                    fprintf(stderr, "Error: %s requires an argument\n", argv[optind - 1]);
+                    return help(2);
+                }
+                if(strlen(argv[optind]) != 1 || (argv[optind][0] != '0' && argv[optind][0] != '1')) {
+                    fprintf(stderr, "Error: unsupported file format version %s, we only support version 0 (AES-256-GCM) and 1 (Chacha20-Poly1305)\n", argv[optind]);
+                    return help(2);
+                }
+                if(argv[optind][0] == '0') {
+                    version = 0;
+#ifdef PEGH_LIBSODIUM
+                    if(1 != check_version(0, NULL)) {
+                        return help(19);
+                    }
+#endif
+                } else {
+                    version = 1;
+                }
                 break;
             case 'V':
-                fprintf(stderr, "pegh %s\nformat versions supported: 0\n", PEGH_VERSION);
+                fprintf(stderr, "pegh %s\nformat versions supported: 0 (AES-256-GCM) and 1 (Chacha20-Poly1305)\n", PEGH_VERSION);
                 return 0;
             case 'h':
                 return help(0);
@@ -1029,13 +1057,6 @@ int main(int argc, char **argv)
             decrypt, password, scrypt_max_mem, N, r, p, scale);
     return 0;
     */
-
-#ifdef PEGH_LIBSODIUM
-    if (sodium_init() == -1) {
-        fprintf(stderr, "Error: libsodium could not be initialized, compile/use openssl version?\n");
-        return 2;
-    }
-#endif /* PEGH_LIBSODIUM */
 
     if(NULL != in_filename) {
         in = fopen(in_filename, "rb");
@@ -1089,5 +1110,5 @@ int main(int argc, char **argv)
     }
 
     /* to the OS, 0 means success, the above functions 1 means success */
-    return exit_code == 1 ? 0 : 1;
+    return exit_code == 1 ? 0 : (exit_code == 0 ? 1 : exit_code);
 }

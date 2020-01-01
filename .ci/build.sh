@@ -27,19 +27,7 @@ ls -lah pegh.static.*
 file pegh.static.*
 ldd pegh.static.* || true
 
-# libsodium only supports AES-256-GCM on certain CPUs that have hardware instructions for it
-# we can build them regardless, but we can't test them without that, pegh prints that right away
-export TEST_BINS="./pegh.static.openssl ./pegh.openssl ./pegh.static.libsodium-openssl ./pegh.libsodium-openssl"
-set +e
-if ./pegh.static.libsodium -h 2>&1 >/dev/null | grep '^Error: libsodium'
-then
-    echo "CPU does not have AES support so can't run libsodium version"
-else
-    echo "CPU has AES support so can run libsodium version"
-    # we can test everything
-    export TEST_BINS="$TEST_BINS ./pegh.libsodium ./pegh.static.libsodium"
-fi
-set -e
+export TEST_BINS="./pegh.static.openssl ./pegh.openssl ./pegh.static.libsodium-openssl ./pegh.libsodium-openssl ./pegh.static.libsodium ./pegh.libsodium"
 
 # compile dynamically linked versions (with gcc) to openssl and libsodium, then test all 4 against each other
 ./test.sh
