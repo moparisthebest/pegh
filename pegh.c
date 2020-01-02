@@ -56,8 +56,14 @@ const uint8_t SCRYPT_R = 8;
 const uint8_t SCRYPT_P = 1;
 const size_t SCRYPT_MAX_MEM = 1024 * 1024 * 64; /* 64 megabytes */
 
-/* tweak buffer sizes here, memory use will be twice this */
-const uint32_t BUFFER_SIZE_MB = 32;
+/* memory use will be twice this */
+const uint32_t DEFAULT_CHUNK_SIZE_MB = 32;
+
+/*
+ * this should be increased regularly, and only checked on encryption
+ * to allow old archives to be decrypted with shorter passwords
+ */
+const size_t MINIMUM_PASSWORD_LEN = 12;
 
 /*
  * pegh file format, numbers are inclusive 0-based byte array indices
@@ -846,12 +852,13 @@ int help(int exit_code) {
     /* this ridiculous split is because C89 only supports strings of 509 characters */
     fprintf(stderr, "\
 usage: pegh [options...] password\n\
+ password:     minimum required length is %lu\n\
  -e            encrypt input to output, default mode\n\
  -d            decrypt input to output\n\
  -i <filename> file to use for input, - means stdin, default stdin\n\
  -o <filename> file to use for output, - means stdout, default stdout\n\
  -a            append to -o instead of truncate\n\
- -v            pegh file format version to output,\n");
+ -v            pegh file format version to output,\n", MINIMUM_PASSWORD_LEN);
     fprintf(stderr, "\
                either 0 (AES-256-GCM) or 1 (Chacha20-Poly1305),\n\
                default: 0 if AES is hardware accelerated, 1 otherwise\n\
@@ -867,7 +874,7 @@ usage: pegh [options...] password\n\
  -m <max_mb>   maximum megabytes of ram to use when deriving key from password\n\
                with scrypt, applies for encryption AND decryption, must\n\
                almost linearly scale with -N, if too low operation will fail,\n\
-               default: %d\n", CHUNK_SIZE_MAX_GCM / 1024 / 1024, CHUNK_SIZE_MAX_CHACHA / 1024 / 1024, BUFFER_SIZE_MB, SCRYPT_MAX_MEM / 1024 / 1024);
+               default: %d\n", CHUNK_SIZE_MAX_GCM / 1024 / 1024, CHUNK_SIZE_MAX_CHACHA / 1024 / 1024, DEFAULT_CHUNK_SIZE_MB, SCRYPT_MAX_MEM / 1024 / 1024);
     fprintf(stderr, "\
  -f <filename> read password from file instead of argument, - means stdin\n\
  -N <num>      scrypt parameter N, only applies for encryption, default %d\n\
@@ -1003,7 +1010,7 @@ int main(int argc, char **argv)
 {
     int optind, decrypt = 0, append = 0, exit_code = 2, version = -1;
     char *password = NULL;
-    uint32_t N = SCRYPT_N, scrypt_max_mem = SCRYPT_MAX_MEM, buffer_size = BUFFER_SIZE_MB * 1024 * 1024, scale = 1;
+    uint32_t N = SCRYPT_N, scrypt_max_mem = SCRYPT_MAX_MEM, buffer_size = DEFAULT_CHUNK_SIZE_MB * 1024 * 1024, scale = 1;
     uint8_t r = SCRYPT_R, p = SCRYPT_P;
     size_t password_len;
 
@@ -1116,6 +1123,11 @@ int main(int argc, char **argv)
         }
         password = argv[optind];
         password_len = strlen(password);
+    }
+
+    if(0 == decrypt && password_len < MINIMUM_PASSWORD_LEN) {
+        fprintf (stderr, "Error: Minimum password length is %lu but was only %lu\n", MINIMUM_PASSWORD_LEN, password_len);
+        return help(exit_code);
     }
 
     /* apply scale */
