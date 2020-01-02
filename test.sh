@@ -62,10 +62,16 @@ test () {
     # can send -s 32 or -m 2048 to decrypt command with identical effect
     "$bin" -e "$@" "$key" -s 32 < "$dummy_file" | "$bin_decrypt" -d "$key" -m 2048 | cmp - "$dummy_file"
 
+    echo 'encrypting/decrypting with key in file should work, even when key has leading 0s and a trailing newline'
+    "$bin" -e "$@" -f <(cat <(dd if=/dev/zero bs=1M count=1) <(echo "$key")) < "$dummy_file" | "$bin_decrypt" -d -f <(cat <(dd if=/dev/zero bs=1M count=1) <(echo "$key")) | cmp - "$dummy_file"
+
     set +e
     # these should fail
     echo 'encrypting with one key and decrypting with another should fail'
     "$bin" -e "$@" "$key" -i "$dummy_file" | "$bin_decrypt" -d "$key-wrongkey" | cmp - "$dummy_file" && echo "ERROR: appending -wrongkey to key somehow still worked" && exit 1
+
+    echo 'encrypting/decrypting with key in file where last byte is different should fail'
+    "$bin" -e "$@" -f <(cat <(dd if=/dev/zero bs=1M count=1) <(echo "$key") <(echo -n a)) < "$dummy_file" | "$bin_decrypt" -d -f <(cat <(dd if=/dev/zero bs=1M count=1) <(echo "$key") <(echo -n b)) | cmp - "$dummy_file" && echo "ERROR: differing last byte in password file somehow still worked" && exit 1
 
     echo 'large values of N without enough memory should fail'
     "$bin" -e "$@" "$key" -N 2000000 -i "$dummy_file" >/dev/null && echo "ERROR: N of 2 million without extra memory worked" && exit 1

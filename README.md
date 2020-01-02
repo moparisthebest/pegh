@@ -30,8 +30,8 @@ $ pegh -h
 usage: pegh [options...] password
  -e            encrypt input to output, default mode
  -d            decrypt input to output
- -i <filename> file to use for input, default stdin
- -o <filename> file to use for output, default stdout
+ -i <filename> file to use for input, - means stdin, default stdin
+ -o <filename> file to use for output, - means stdout, default stdout
  -a            append to -o instead of truncate
  -v            pegh file format version to output,
                either 0 (AES-256-GCM) or 1 (Chacha20-Poly1305),
@@ -48,6 +48,7 @@ usage: pegh [options...] password
                with scrypt, applies for encryption AND decryption, must
                almost linearly scale with -N, if too low operation will fail,
                default: 64
+ -f <filename> read password from file instead of argument, - means stdin
  -N <num>      scrypt parameter N, only applies for encryption, default 32768
                this is rounded up to the next highest power of 2
  -r <num>      scrypt parameter r, only applies for encryption, default 8

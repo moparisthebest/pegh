@@ -318,7 +318,7 @@ int chacha_decrypt(const unsigned char *ciphertext, const size_t ciphertext_len,
 }
 
 /* returns 1 on success, 0 on error */
-int scrypt_derive_key(char *password, size_t password_len,
+int scrypt_derive_key(char *password, const size_t password_len,
          uint32_t scrypt_max_mem, uint32_t N,
          uint8_t r, uint8_t p, unsigned char *salt, unsigned char *key, FILE *err) {
     /* derive key using salt, password, and scrypt parameters */
@@ -480,7 +480,7 @@ int chacha_decrypt(const unsigned char *ciphertext, const size_t ciphertext_len,
 }
 
 /* returns 1 on success, 0 on error */
-int scrypt_derive_key(char *password, size_t password_len,
+int scrypt_derive_key(char *password, const size_t password_len,
          uint32_t scrypt_max_mem, uint32_t N,
          uint8_t r, uint8_t p, unsigned char *salt, unsigned char *key, FILE *err) {
     size_t needed_memory;
@@ -706,15 +706,13 @@ void write_uint32_big_endian(uint32_t val, unsigned char *buf) {
 }
 
 /* returns 1 on success, 0 on failure */
-int scrypt_derive_key_stream(const stream_func crypt_stream, const aead_func aead, char *password,
+int scrypt_derive_key_stream(const stream_func crypt_stream, const aead_func aead,
+         char *password, const size_t password_len,
          uint32_t scrypt_max_mem, size_t buffer_size,
          FILE *in, FILE *out, FILE *err,
          uint32_t N, uint8_t r, uint8_t p, unsigned char *salt) {
     unsigned char key[KEY_LEN] = {0};
     int ret;
-    size_t password_len;
-
-    password_len = strlen(password);
 
     ret = scrypt_derive_key(password, password_len, scrypt_max_mem, N, r, p, salt, key, err);
     wipe_memory(password, password_len);
@@ -757,7 +755,7 @@ int check_version(uint8_t version, FILE *err) {
 }
 
 /* returns 1 on success, 0 on failure */
-int pegh_encrypt(char *password,
+int pegh_encrypt(char *password, const size_t password_len,
          uint32_t scrypt_max_mem, size_t buffer_size,
          FILE *in, FILE *out, FILE *err,
          uint8_t version,
@@ -790,11 +788,13 @@ int pegh_encrypt(char *password,
     }
     fwrite(salt, 1, SALT_LEN, out);
 
-    return scrypt_derive_key_stream(encrypt_stream, version == 0 ? gcm_encrypt : chacha_encrypt, password, scrypt_max_mem, buffer_size, in, out, err, N, r, p, salt);
+    return scrypt_derive_key_stream(encrypt_stream, version == 0 ? gcm_encrypt : chacha_encrypt,
+                                    password, password_len,
+                                    scrypt_max_mem, buffer_size, in, out, err, N, r, p, salt);
 }
 
 /* returns 1 on success, 0 on failure */
-int pegh_decrypt(char *password,
+int pegh_decrypt(char *password, const size_t password_len,
          uint32_t scrypt_max_mem, size_t max_buffer_size,
          FILE *in, FILE *out, FILE *err)
 {
@@ -838,7 +838,8 @@ int pegh_decrypt(char *password,
     }
 
     return scrypt_derive_key_stream(decrypt_stream, version == 0 ? gcm_decrypt : chacha_decrypt,
-                                    password, scrypt_max_mem, buffer_size, in, out, err, N, r, p, salt);
+                                    password, password_len,
+                                    scrypt_max_mem, buffer_size, in, out, err, N, r, p, salt);
 }
 
 int help(int exit_code) {
@@ -847,8 +848,8 @@ int help(int exit_code) {
 usage: pegh [options...] password\n\
  -e            encrypt input to output, default mode\n\
  -d            decrypt input to output\n\
- -i <filename> file to use for input, default stdin\n\
- -o <filename> file to use for output, default stdout\n\
+ -i <filename> file to use for input, - means stdin, default stdin\n\
+ -o <filename> file to use for output, - means stdout, default stdout\n\
  -a            append to -o instead of truncate\n\
  -v            pegh file format version to output,\n");
     fprintf(stderr, "\
@@ -868,6 +869,7 @@ usage: pegh [options...] password\n\
                almost linearly scale with -N, if too low operation will fail,\n\
                default: %d\n", CHUNK_SIZE_MAX_GCM / 1024 / 1024, CHUNK_SIZE_MAX_CHACHA / 1024 / 1024, BUFFER_SIZE_MB, SCRYPT_MAX_MEM / 1024 / 1024);
     fprintf(stderr, "\
+ -f <filename> read password from file instead of argument, - means stdin\n\
  -N <num>      scrypt parameter N, only applies for encryption, default %d\n\
                this is rounded up to the next highest power of 2\n\
  -r <num>      scrypt parameter r, only applies for encryption, default %d\n\
@@ -922,6 +924,16 @@ uint8_t parse_byte_arg(int optind, int argc, char **argv) {
     return (uint8_t) tmp;
 }
 
+char* parse_filename_arg(int optind, int argc, char **argv) {
+    if(optind >= argc) {
+        fprintf(stderr, "Error: %s requires an argument\n", argv[optind - 1]);
+        help_exit(2);
+        return 0;
+    }
+    /* - means stdin or stdout, we return NULL */
+    return strlen(argv[optind]) == 1 && argv[optind][0] == '-' ? NULL : argv[optind];
+}
+
 uint32_t next_highest_power_of_2(uint32_t v) {
     --v;
     v |= v >> 1;
@@ -932,6 +944,60 @@ uint32_t next_highest_power_of_2(uint32_t v) {
     return ++v;
 }
 
+/* in_filename NULL means stdin */
+char* read_file_fully(const char *in_filename, size_t *file_len) {
+    char* contents;
+    size_t read, actual_size = 0, total_size = 1024;
+    FILE *in = stdin;
+
+    if(NULL != in_filename) {
+        in = fopen(in_filename, "rb");
+        if(!in) {
+            fprintf (stderr, "Error: file '%s' cannot be opened for reading\n", in_filename);
+            return NULL;
+        }
+    }
+
+    contents = malloc(total_size);
+    if(!contents) {
+        fprintf (stderr, "Error: memory cannot be allocated to read file '%s'\n", in_filename);
+        if(NULL != in_filename) {
+            fclose(in);
+        }
+        return NULL;
+    }
+
+    while ((read = fread(contents + actual_size, 1, 512, in)) > 0) {
+        actual_size += read;
+        if ((actual_size + 512) > total_size) {
+            total_size = total_size * 2;
+            contents = realloc(contents, total_size);
+            if(!contents) {
+                fprintf (stderr, "Error: memory cannot be allocated to read file '%s'\n", in_filename);
+                if(NULL != in_filename) {
+                    fclose(in);
+                }
+                return NULL;
+            }
+        }
+    }
+
+    if(NULL != in_filename) {
+        fclose(in);
+    }
+
+    /* now let's size it down to the minimum size */
+    contents = realloc(contents, actual_size);
+    if (!contents) {
+        fprintf (stderr, "Error: memory cannot be allocated to read file '%s'\n", in_filename);
+        return NULL;
+    }
+
+    *file_len = actual_size;
+
+    return contents;
+}
+
 /* returns 0 on success, 1 on cryptography failure, 19 on "libsodium only and CPU does not support AES" error, 2 on other failure */
 int main(int argc, char **argv)
 {
@@ -939,6 +1005,7 @@ int main(int argc, char **argv)
     char *password = NULL;
     uint32_t N = SCRYPT_N, scrypt_max_mem = SCRYPT_MAX_MEM, buffer_size = BUFFER_SIZE_MB * 1024 * 1024, scale = 1;
     uint8_t r = SCRYPT_R, p = SCRYPT_P;
+    size_t password_len;
 
     FILE *in = stdin, *out = stdout, *err = stderr;
     char *in_filename = NULL, *out_filename = NULL;
@@ -970,18 +1037,13 @@ int main(int argc, char **argv)
                 append = 1;
                 break;
             case 'i':
-                if(++optind >= argc) {
-                    fprintf(stderr, "Error: %s requires an argument\n", argv[optind - 1]);
-                    return help(2);
-                }
-                in_filename = argv[optind];
+                in_filename = parse_filename_arg(++optind, argc, argv);
                 break;
             case 'o':
-                if(++optind >= argc) {
-                    fprintf(stderr, "Error: %s requires an argument\n", argv[optind - 1]);
-                    return help(2);
-                }
-                out_filename = argv[optind];
+                out_filename = parse_filename_arg(++optind, argc, argv);
+                break;
+            case 'f':
+                password = read_file_fully(parse_filename_arg(++optind, argc, argv), &password_len);
                 break;
             case 'c':
                 buffer_size = parse_int_arg(++optind, argc, argv) * 1024 * 1024;
@@ -1035,6 +1097,7 @@ int main(int argc, char **argv)
             }
         } else if (password == NULL) {
             password = argv[optind];
+            password_len = strlen(password);
         } else {
             fprintf (stderr, "Error: more than one password provided\n");
             return help(exit_code);
@@ -1052,6 +1115,7 @@ int main(int argc, char **argv)
             return help(exit_code);
         }
         password = argv[optind];
+        password_len = strlen(password);
     }
 
     /* apply scale */
@@ -1082,7 +1146,7 @@ int main(int argc, char **argv)
     }
 
     if(decrypt)
-        exit_code = pegh_decrypt(password, scrypt_max_mem, buffer_size, in, out, err);
+        exit_code = pegh_decrypt(password, password_len, scrypt_max_mem, buffer_size, in, out, err);
     else {
         if(-1 == version) {
             /* they left this as default, so attempt to pick best (fastest) version */
@@ -1106,7 +1170,7 @@ int main(int argc, char **argv)
 #endif
 #endif /* PEGH_OPENSSL */
         }
-        exit_code = pegh_encrypt(password, scrypt_max_mem, buffer_size, in, out, err, (uint8_t) version, N, r, p);
+        exit_code = pegh_encrypt(password, password_len, scrypt_max_mem, buffer_size, in, out, err, (uint8_t) version, N, r, p);
     }
 
     if(NULL != in_filename) {
