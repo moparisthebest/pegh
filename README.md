@@ -1,9 +1,22 @@
 pegh
 ----
 
+[![Travis-CI Build Status](https://api.travis-ci.com/moparisthebest/pegh.svg?branch=master)](https://travis-ci.com/moparisthebest/pegh)
+
 pegh is a file encryption tool using passwords with modern, standardized, and authenticated encryption. It is simple, secure, and returns proper exit codes so you can tell whether encryption or decryption failed or not.
 
 [pegh](http://klingonska.org/dict/?q=tlh%3Apegh) is Klingon for secret
+
+This implementation is built in C and can link with OpenSSL, libsodium, *or* libsodium AND OpenSSL in which case it falls back to OpenSSL's software AES implementation if the CPU does not support libsodium's.  Every commit is built and tested in every combination and currently on 3 different architectures on Linux.  The code aims to be fully portable C that should compile on anything with a C89 compiler (depending on crypto backend chosen).
+
+Releases
+--------
+
+[Releases](https://github.com/moparisthebest/pegh/releases) contains static binaries for Linux architectures amd64, i386, and aarch64, more to come...
+
+`pegh-$ARCH-openssl`             - supports AES-256-GCM and Chacha20-Poly1305 on all CPUs
+`pegh-$ARCH-libsodium`           - supports Chacha20-Poly1305 on all CPUs, but AES-256-GCM only on CPUs with hardware support for aes-ni
+`pegh-$ARCH-libsodium-openssl`   - supports AES-256-GCM and Chacha20-Poly1305 on all CPUs, uses libsodium for everything if possible, but OpenSSL's software AES implementation if the CPU does not support aes-ni
 
 Usage
 -----
@@ -37,6 +50,7 @@ full help:
 ```
 $ pegh -h
 usage: pegh [options...] password
+ password:     minimum required length is 12
  -e            encrypt input to output, default mode
  -d            decrypt input to output
  -i <filename> file to use for input, - means stdin, default stdin
