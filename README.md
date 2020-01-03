@@ -12,11 +12,17 @@ This implementation is built in C and can link with OpenSSL, libsodium, *or* lib
 Releases
 --------
 
-[Releases](https://github.com/moparisthebest/pegh/releases) contains static binaries for Linux architectures amd64, i386, and aarch64, more to come...
+[Releases](https://github.com/moparisthebest/pegh/releases) contain static binaries for:
 
-`pegh-$ARCH-openssl`             - supports AES-256-GCM and Chacha20-Poly1305 on all CPUs
-`pegh-$ARCH-libsodium`           - supports Chacha20-Poly1305 on all CPUs, but AES-256-GCM only on CPUs with hardware support for aes-ni
-`pegh-$ARCH-libsodium-openssl`   - supports AES-256-GCM and Chacha20-Poly1305 on all CPUs, uses libsodium for everything if possible, but OpenSSL's software AES implementation if the CPU does not support aes-ni
+  * Linux amd64, i386, aarch64
+  * Windows amd64, i386
+  * more to come?
+
+what do the names mean?
+
+  * `pegh-$ARCH-openssl`             - supports AES-256-GCM and Chacha20-Poly1305 on all CPUs
+  * `pegh-$ARCH-libsodium`           - supports Chacha20-Poly1305 on all CPUs, but AES-256-GCM only on CPUs with hardware support for aes-ni
+  * `pegh-$ARCH-libsodium-openssl`   - supports AES-256-GCM and Chacha20-Poly1305 on all CPUs, uses libsodium for everything if possible, but OpenSSL's software AES implementation if the CPU does not support aes-ni
 
 Usage
 -----

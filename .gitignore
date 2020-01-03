@@ -4,4 +4,6 @@ pegh.libsodium*
 pegh.openssl
 bla.txt
 
+*.exe
+
 *.kate-swp

@@ -10,11 +10,14 @@ rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 cp * .ci/build.sh "$BUILD_DIR"
 
-docker run --rm -v "$BUILD_DIR":/tmp "$DOCKER_IMAGE" /tmp/build.sh || exit 1
+docker run --rm -v "$BUILD_DIR":/tmp "$DOCKER_IMAGE" /tmp/build.sh "$ARCH" || exit 1
 
 mv "$BUILD_DIR"pegh.static.openssl "./pegh-$ARCH-openssl"
 mv "$BUILD_DIR"pegh.static.libsodium "./pegh-$ARCH-libsodium"
 mv "$BUILD_DIR"pegh.static.libsodium-openssl "./pegh-$ARCH-libsodium-openssl"
+
+mv "$BUILD_DIR"pegh-*.exe ./
+
 rm -rf "$BUILD_DIR" 2>/dev/null
 
 exit 0
