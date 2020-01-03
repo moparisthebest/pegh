@@ -15,11 +15,20 @@ pegh -e SUPER_SECRET_1942 <file.txt >file.txt.pegh
 # decrypt file.txt.pegh to file.txt with password SUPER_SECRET_1942
 pegh -d SUPER_SECRET_1942 <file.txt.pegh >file.txt
 
-# make enrypted backup
+# encrypt file.txt to file.txt.pegh with password from password.txt
+pegh -f password.txt -i file.txt -o file.txt.pegh
+
+# make encrypted backup
 tar czv -C /path/to/dir/ . | pegh SUPER_SECRET_1942 -o foo.tar.gz.pegh
 
-# extract encrypted backup
+# extract encrypted backup, the "I'm ok with truncated data" way
 pegh SUPER_SECRET_1942 -d -i foo.tar.gz.pegh | tar xzv
+
+# safely extract only complete encrypted backup, the "I have more space than time" way
+pegh SUPER_SECRET_1942 -d -i foo.tar.gz.pegh -o foo.tar.gz && tar xzvf foo.tar.gz; rm -f foo.tar.gz
+
+# safely extract only complete encrypted backup, the "I have more time than space" way
+pegh SUPER_SECRET_1942 -d -i foo.tar.gz.pegh >/dev/null && pegh SUPER_SECRET_1942 -d -i foo.tar.gz.pegh | tar xzv
 ```
 
 The easiest way to scale cost/time it takes for bruteforcing is simply to continue doubling -s, on both encryption and decryption commands.
@@ -69,7 +78,9 @@ For additional info on scrypt params refer to:
 Security
 --------
 
-Each chunk is fully decrypted and authenticated in memory before being written out as plaintext, so an attacker may be able to truncate a file, but NEVER flip any bytes or corrupt it.  Order is enforced by the incrementing the IV, so re-ordered chunks would be decrypted with the wrong IV and would fail authentication.
+Each chunk is fully decrypted and authenticated in memory before being written out as plaintext, so an attacker may be able to truncate a file, but NEVER flip any bytes or corrupt it.  Order is enforced by the incrementing the IV, so re-ordered chunks would be decrypted with the wrong IV and would fail authentication.  The last chunk is flagged with AAD so we can detect files truncated even on chunk boundaries.
+
+So only fully correct chunks will be output, and only ever in the correct order, but if later chunks are corrupted or the file is truncated, pegh will exit with an error code, and then it's the responsibility of the user/consuming application to do the proper thing with the truncated file it recieved.
 
 Of course standard password bruteforcing is possible, but can be mitigated with increased scrypt parameters and longer password lengths.
 
@@ -78,7 +89,7 @@ pegh file format
 
 pegh implements a simple versioned file format so encryption parameters can change in the future. Numbers here are inclusive 0-based byte array indices, 0th byte is always version number, everything else depends on version number, currently versions 0 and 1 exist.
 
-Version 0, scrypt key derivation, AES-256-GCM encryption, 43 byte header, 16 byte auth tag per chunk. The 12-byte IV for the first chunk is 0, and is incremented by 1 for each successive chunk, if it ever rolls back over to 0 encryption should be aborted (chunk size should be increased).
+Version 0, scrypt key derivation, AES-256-GCM encryption, 43 byte header, 16 byte auth tag per chunk. The 12-byte IV for the first chunk is 0, and is incremented by 1 for each successive chunk, if it ever rolls back over to 0 encryption should be aborted (chunk size should be increased).  The last chunk has Additional Authenticated Data (AAD) sent in, a single byte value 0, which is used to flag the last chunk and detect file truncation.
 
 | indices      | format                                      | value interpretation                    |
 |--------------|---------------------------------------------|-----------------------------------------|

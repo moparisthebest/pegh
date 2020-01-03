@@ -73,7 +73,9 @@ const size_t MINIMUM_PASSWORD_LEN = 12;
  * |------------------------------------------------------------------------------------------------------|
  * | Version 0, scrypt key derivation, AES-256-GCM encryption, 43 byte header, 16 byte auth tag per chunk |
  * | The 12-byte IV for the first chunk is 0, and is incremented by 1 for each successive chunk, if it    |
- * | ever rolls back over to 0 encryption should be aborted (chunk size should be increased).             |
+ * | ever rolls back over to 0 encryption should be aborted (chunk size should be increased).  The last   |
+ * | chunk has Additional Authenticated Data (AAD) sent in, a single byte value 0, which is used to flag  |
+ * | the last chunk and detect file truncation.                                                           |
  * |--------------|---------------------------------------------|-----------------------------------------|
  * | indices      | format                                      | value interpretation                    |
  * |--------------|---------------------------------------------|-----------------------------------------|
@@ -108,6 +110,7 @@ const size_t AEAD_TAG_LEN = 16;
 /* libsodium only supports AES on specific platforms, this jazz is to fallback to openssl impls in those cases */
 typedef int (*aead_func)(const unsigned char *, const size_t,
     const unsigned char *, const unsigned char *,
+    const unsigned char*, const size_t,
     unsigned char *, unsigned char *
 );
 
@@ -141,6 +144,7 @@ static const size_t CHUNK_SIZE_MAX_CHACHA = INT_MAX;
 int aead_encrypt_openssl(const EVP_CIPHER *type, const unsigned char *plaintext, const size_t plaintext_len,
                 const unsigned char *key,
                 const unsigned char *iv,
+                const unsigned char* aad, const size_t aad_len,
                 unsigned char *ciphertext,
                 unsigned char *tag
                )
@@ -165,6 +169,15 @@ int aead_encrypt_openssl(const EVP_CIPHER *type, const unsigned char *plaintext,
         /* Initialise key and IV */
         if(1 != EVP_EncryptInit_ex(ctx, NULL, NULL, key, iv))
             break;
+
+        if(aad_len > 0) {
+            /*
+            * Provide any AAD data. This can be called zero or more times as
+            * required
+            */
+            if(1 != EVP_EncryptUpdate(ctx, NULL, &ciphertext_written, aad, (int) aad_len))
+                break;
+        }
 
         /*
         * Provide the message to be encrypted, and obtain the encrypted output.
@@ -215,6 +228,7 @@ int aead_encrypt_openssl(const EVP_CIPHER *type, const unsigned char *plaintext,
 int aead_decrypt_openssl(const EVP_CIPHER *type, const unsigned char *ciphertext, const size_t ciphertext_len,
                 const unsigned char *key,
                 const unsigned char *iv,
+                const unsigned char* aad, const size_t aad_len,
                 unsigned char *tag,
                 unsigned char *plaintext
                )
@@ -239,6 +253,15 @@ int aead_decrypt_openssl(const EVP_CIPHER *type, const unsigned char *ciphertext
         /* Initialise key and IV */
         if(!EVP_DecryptInit_ex(ctx, NULL, NULL, key, iv))
             break;
+
+        if(aad_len > 0) {
+           /*
+            * Provide any AAD data. This can be called zero or more times as
+            * required
+            */
+            if(1 != EVP_DecryptUpdate(ctx, NULL, &plaintext_written, aad, (int) aad_len))
+                break;
+        }
 
         /*
         * Provide the message to be decrypted, and obtain the plaintext output.
@@ -276,23 +299,28 @@ int aead_decrypt_openssl(const EVP_CIPHER *type, const unsigned char *ciphertext
 int gcm_encrypt_openssl(const unsigned char *plaintext, const size_t plaintext_len,
                 const unsigned char *key,
                 const unsigned char *iv,
+                const unsigned char* aad, const size_t aad_len,
                 unsigned char *ciphertext,
                 unsigned char *tag
                ) {
     return aead_encrypt_openssl(EVP_aes_256_gcm(), plaintext, plaintext_len,
                 key, iv,
+                aad, aad_len,
                 ciphertext, tag);
 }
 
 int gcm_decrypt_openssl(const unsigned char *ciphertext, const size_t ciphertext_len,
                 const unsigned char *key,
                 const unsigned char *iv,
+                const unsigned char* aad, const size_t aad_len,
                 unsigned char *tag,
                 unsigned char *plaintext
                )
 {
     return aead_decrypt_openssl(EVP_aes_256_gcm(), ciphertext, ciphertext_len,
-                key, iv, tag,
+                key, iv,
+                aad, aad_len,
+                tag,
                 plaintext);
 }
 
@@ -303,23 +331,28 @@ int gcm_decrypt_openssl(const unsigned char *ciphertext, const size_t ciphertext
 int chacha_encrypt(const unsigned char *plaintext, const size_t plaintext_len,
                 const unsigned char *key,
                 const unsigned char *iv,
+                const unsigned char* aad, const size_t aad_len,
                 unsigned char *ciphertext,
                 unsigned char *tag
                ) {
     return aead_encrypt_openssl(EVP_chacha20_poly1305(), plaintext, plaintext_len,
                 key, iv,
+                aad, aad_len,
                 ciphertext, tag);
 }
 
 int chacha_decrypt(const unsigned char *ciphertext, const size_t ciphertext_len,
                 const unsigned char *key,
                 const unsigned char *iv,
+                const unsigned char* aad, const size_t aad_len,
                 unsigned char *tag,
                 unsigned char *plaintext
                )
 {
     return aead_decrypt_openssl(EVP_chacha20_poly1305(), ciphertext, ciphertext_len,
-                key, iv, tag,
+                key, iv,
+                aad, aad_len,
+                tag,
                 plaintext);
 }
 
@@ -389,6 +422,7 @@ static const size_t CHUNK_SIZE_MAX_CHACHA = 274877906880; /* 64*(2^32)-64 or sli
 int gcm_encrypt_libsodium(const unsigned char *plaintext, const size_t plaintext_len,
                 const unsigned char *key,
                 const unsigned char *iv,
+                const unsigned char* aad, const size_t aad_len,
                 unsigned char *ciphertext,
                 unsigned char *tag
                )
@@ -396,7 +430,7 @@ int gcm_encrypt_libsodium(const unsigned char *plaintext, const size_t plaintext
     crypto_aead_aes256gcm_encrypt_detached(ciphertext,
                                            tag, NULL,
                               plaintext, plaintext_len,
-                              NULL, 0,
+                              aad, aad_len,
                               NULL, iv, key);
     return 1;
 }
@@ -417,6 +451,7 @@ int gcm_encrypt_libsodium(const unsigned char *plaintext, const size_t plaintext
 int gcm_decrypt_libsodium(const unsigned char *ciphertext, const size_t ciphertext_len,
                 const unsigned char *key,
                 const unsigned char *iv,
+                const unsigned char* aad, const size_t aad_len,
                 unsigned char *tag,
                 unsigned char *plaintext
                )
@@ -425,7 +460,7 @@ int gcm_decrypt_libsodium(const unsigned char *ciphertext, const size_t cipherte
                                   NULL,
                                   ciphertext, (size_t) ciphertext_len,
                                   tag,
-                                  NULL, 0,
+                                  aad, aad_len,
                                   iv, key) != 0 ? 0 : 1;
 }
 
@@ -445,6 +480,7 @@ int gcm_decrypt_libsodium(const unsigned char *ciphertext, const size_t cipherte
 int chacha_encrypt(const unsigned char *plaintext, const size_t plaintext_len,
                 const unsigned char *key,
                 const unsigned char *iv,
+                const unsigned char* aad, const size_t aad_len,
                 unsigned char *ciphertext,
                 unsigned char *tag
                )
@@ -452,7 +488,7 @@ int chacha_encrypt(const unsigned char *plaintext, const size_t plaintext_len,
     crypto_aead_chacha20poly1305_ietf_encrypt_detached(ciphertext,
                                            tag, NULL,
                               plaintext, plaintext_len,
-                              NULL, 0,
+                              aad, aad_len,
                               NULL, iv, key);
     return 1;
 }
@@ -473,6 +509,7 @@ int chacha_encrypt(const unsigned char *plaintext, const size_t plaintext_len,
 int chacha_decrypt(const unsigned char *ciphertext, const size_t ciphertext_len,
                 const unsigned char *key,
                 const unsigned char *iv,
+                const unsigned char* aad, const size_t aad_len,
                 unsigned char *tag,
                 unsigned char *plaintext
                )
@@ -481,7 +518,7 @@ int chacha_decrypt(const unsigned char *ciphertext, const size_t ciphertext_len,
                                   NULL,
                                   ciphertext, (size_t) ciphertext_len,
                                   tag,
-                                  NULL, 0,
+                                  aad, aad_len,
                                   iv, key) != 0 ? 0 : 1;
 }
 
@@ -575,18 +612,40 @@ int encrypt_stream(const aead_func encrypt, const unsigned char *key, unsigned c
         unsigned char *plaintext, unsigned char *ciphertext,
         FILE *in, FILE *out, FILE *err
        ) {
-    size_t plaintext_read;
+    unsigned char aad[1] = {0};
+    unsigned char* plaintext_read_zone = plaintext + 1;
+    size_t plaintext_read, extra_byte_idx = buffer_size - 1;
 
-    while ((plaintext_read = fread(plaintext, 1, buffer_size, in)) > 0) {
+    /* read single byte */
+    plaintext_read = fread(plaintext, 1, 1, in);
+    if(plaintext_read != 1) {
+        if(NULL != err)
+            fprintf(err, "Cowardly refusing to encrypt empty file...\n");
+        return 0;
+    }
 
-        if(1 != encrypt(plaintext, plaintext_read, key, iv, ciphertext, ciphertext + plaintext_read))
+    while ((plaintext_read = fread(plaintext_read_zone, 1, buffer_size, in)) == buffer_size) {
+
+        /* there are more chunks after this */
+        if(1 != encrypt(plaintext, plaintext_read, key, iv, NULL, 0, ciphertext, ciphertext + plaintext_read))
             return 0;
+
+        /* save extra byte at end */
+        plaintext[0] = plaintext_read_zone[extra_byte_idx];
 
         if(1 != iv_increment_forbid_zero(iv, IV_LEN, err))
             return 0;
 
         fwrite(ciphertext, 1, plaintext_read + AEAD_TAG_LEN, out);
     }
+    /* this is the last chunk, use AD */
+    plaintext_read += 1;
+
+    if(1 != encrypt(plaintext, plaintext_read, key, iv, aad, 1, ciphertext, ciphertext + plaintext_read))
+        return 0;
+
+    fwrite(ciphertext, 1, plaintext_read + AEAD_TAG_LEN, out);
+
     return 1;
 }
 
@@ -595,11 +654,20 @@ int decrypt_stream(const aead_func decrypt, const unsigned char *key, unsigned c
         unsigned char *plaintext, unsigned char *ciphertext,
         FILE *in, FILE *out, FILE *err
        ) {
-    size_t ciphertext_read;
+    unsigned char aad[1] = {0};
+    unsigned char* ciphertext_read_zone = ciphertext + 1;
+    size_t ciphertext_read, extra_byte_idx = buffer_size + AEAD_TAG_LEN - 1;
 
     buffer_size += AEAD_TAG_LEN;
 
-    while ((ciphertext_read = fread(ciphertext, 1, buffer_size, in)) > 0) {
+    ciphertext_read = fread(ciphertext, 1, 1, in);
+    if(ciphertext_read != 1) {
+        if(NULL != err)
+            fprintf(err, "File too small for decryption, truncated?\n");
+        return 0;
+    }
+
+    while ((ciphertext_read = fread(ciphertext_read_zone, 1, buffer_size, in)) == buffer_size) {
 
         if(ciphertext_read < AEAD_TAG_LEN) {
             if(NULL != err)
@@ -609,14 +677,33 @@ int decrypt_stream(const aead_func decrypt, const unsigned char *key, unsigned c
 
         ciphertext_read -= AEAD_TAG_LEN;
 
-        if(1 != decrypt(ciphertext, ciphertext_read, key, iv, ciphertext + ciphertext_read, plaintext))
-                return 0;
+        if(1 != decrypt(ciphertext, ciphertext_read, key, iv, NULL, 0, ciphertext + ciphertext_read, plaintext))
+            return 0;
+
+        /* save extra byte at end */
+        ciphertext[0] = ciphertext_read_zone[extra_byte_idx];
 
         if(1 != iv_increment_forbid_zero(iv, IV_LEN, err))
             return 0;
 
         fwrite(plaintext, 1, ciphertext_read, out);
     }
+    /* this is the last chunk, use AD */
+    ciphertext_read += 1;
+
+    if(ciphertext_read < AEAD_TAG_LEN) {
+        if(NULL != err)
+            fprintf(err, "File too small for decryption, truncated?\n");
+        return 0;
+    }
+
+    ciphertext_read -= AEAD_TAG_LEN;
+
+    if(1 != decrypt(ciphertext, ciphertext_read, key, iv, aad, 1, ciphertext + ciphertext_read, plaintext))
+        return 0;
+
+    fwrite(plaintext, 1, ciphertext_read, out);
+
     return 1;
 }
 
@@ -665,13 +752,13 @@ int stream(const stream_func crypt_stream, const aead_func aead, unsigned char *
         return 0;
     }
 
-    plaintext = malloc(buffer_size);
+    plaintext = malloc(buffer_size + 1);
     if(!plaintext) {
         if(NULL != err)
             fprintf(err, "plaintext memory allocation failed\n");
         return 0;
     }
-    ciphertext = malloc(buffer_size + AEAD_TAG_LEN);
+    ciphertext = malloc(buffer_size + AEAD_TAG_LEN + 1);
     if(!ciphertext) {
         if(NULL != err)
             fprintf(err, "ciphertext memory allocation failed\n");
