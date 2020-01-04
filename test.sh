@@ -1,18 +1,31 @@
 #!/bin/bash
 
-export dummy_file="$1"
+export tmp_folder="$1"
 shift
 export dummy_mb="$1"
 
-[ "$dummy_file" = "" ] && export dummy_file='/tmp/randombytes'
+[ "$tmp_folder" = "" ] && export tmp_folder='/tmp'
 [ "$dummy_mb" = "" ] && export dummy_mb='100'
 
 [ "$TEST_BINS" = "" ] && TEST_BINS="./pegh.openssl ./pegh.libsodium ./pegh.libsodium-openssl"
+
+dummy_file="${tmp_folder}/randombytes${dummy_mb}"
+leading_zero_key="${tmp_folder}/leading_zero_key"
+leading_zero_key_a="${tmp_folder}/leading_zero_key_a"
+leading_zero_key_b="${tmp_folder}/leading_zero_key_b"
 
 set -euxo pipefail
 
 # try different size files to encrypt/decrypt
 [ -e "$dummy_file" ] || dd if=/dev/urandom bs=1M "count=$dummy_mb" of="$dummy_file"
+
+export key="$(< /dev/urandom tr -dc 'a-z0-9' | head -c12)"
+
+echo "key: $key"
+
+[ -e "$leading_zero_key" ] || cat <(dd if=/dev/zero bs=1M count=1) <(echo "$key") > "$leading_zero_key"
+[ -e "$leading_zero_key_a" ] || cat "$leading_zero_key" <(echo -n a) > "$leading_zero_key_a"
+[ -e "$leading_zero_key_b" ] || cat "$leading_zero_key" <(echo -n b) > "$leading_zero_key_b"
 
 # try make if it's installed, otherwise fall back to cc
 rm -f pegh
@@ -28,10 +41,6 @@ mv pegh pegh.libsodium
 # compile against both libsodium and openssl as a fallback for CPUs libsodium doesn't support
 make PEGH_LIBSODIUM=1 PEGH_OPENSSL=1 || cc -O3 -DPEGH_LIBSODIUM -DPEGH_OPENSSL pegh.c -lsodium -lcrypto -o pegh
 mv pegh pegh.libsodium-openssl
-
-export key="$(< /dev/urandom tr -dc 'a-z0-9' | head -c12)"
-
-echo "key: $key"
 
 test () {
     bin="$1"
@@ -63,7 +72,7 @@ test () {
     "$bin" -e "$@" "$key" -s 32 < "$dummy_file" | "$bin_decrypt" -d "$key" -m 2048 | cmp - "$dummy_file"
 
     echo 'encrypting/decrypting with key in file should work, even when key has leading 0s and a trailing newline'
-    "$bin" -e "$@" -f <(cat <(dd if=/dev/zero bs=1M count=1) <(echo "$key")) < "$dummy_file" | "$bin_decrypt" -d -f <(cat <(dd if=/dev/zero bs=1M count=1) <(echo "$key")) | cmp - "$dummy_file"
+    "$bin" -e "$@" -f "$leading_zero_key" < "$dummy_file" | "$bin_decrypt" -d -f "$leading_zero_key" | cmp - "$dummy_file"
 
     set +e
     # these should fail
@@ -71,7 +80,7 @@ test () {
     "$bin" -e "$@" "$key" -i "$dummy_file" | "$bin_decrypt" -d "$key-wrongkey" | cmp - "$dummy_file" && echo "ERROR: appending -wrongkey to key somehow still worked" && exit 1
 
     echo 'encrypting/decrypting with key in file where last byte is different should fail'
-    "$bin" -e "$@" -f <(cat <(dd if=/dev/zero bs=1M count=1) <(echo "$key") <(echo -n a)) < "$dummy_file" | "$bin_decrypt" -d -f <(cat <(dd if=/dev/zero bs=1M count=1) <(echo "$key") <(echo -n b)) | cmp - "$dummy_file" && echo "ERROR: differing last byte in password file somehow still worked" && exit 1
+    "$bin" -e "$@" -f "$leading_zero_key_a" < "$dummy_file" | "$bin_decrypt" -d -f "$leading_zero_key_b" | cmp - "$dummy_file" && echo "ERROR: differing last byte in password file somehow still worked" && exit 1
 
     echo 'large values of N without enough memory should fail'
     "$bin" -e "$@" "$key" -N 2000000 -i "$dummy_file" >/dev/null && echo "ERROR: N of 2 million without extra memory worked" && exit 1

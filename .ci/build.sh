@@ -41,7 +41,7 @@ then
 
 echo 'going to try to build windows here...'
 
-apk add mingw-w64-gcc curl
+apk add mingw-w64-gcc curl wine
 
 STATIC_LIB_DIR="$(pwd)"
 LIBSODIUM_VERSION=1.0.18
@@ -72,8 +72,12 @@ mv pegh.exe pegh-i386-libsodium-openssl.exe
 
 fi
 
+export wine="wine"
+
 if [ "$ARCH" == "amd64" ]
 then
+
+export wine="wine64"
 
 make CC=x86_64-w64-mingw32-cc PEGH_LIBSODIUM_WIN="${STATIC_LIB_DIR}/libsodium-win64" clean all
 mv pegh.exe pegh-amd64-libsodium.exe
@@ -91,5 +95,23 @@ strip *.exe
 ls -lah *.exe
 file *.exe
 
-# todo: no testing these here for now...
+# now test windows binaries against the static ones with wine
+# no binfmt here where executing .exe *just works*, so do it hacky way :'(
+export TEST_BINS="./pegh.static.openssl ./pegh.static.libsodium-openssl ./pegh.static.libsodium"
+
+for exe in *.exe
+do
+script="$exe.sh"
+cat > "$script" <<EOF
+#!/bin/sh
+exec $wine "./$exe" "\$@"
+EOF
+chmod +x "$script"
+export TEST_BINS="./$script $TEST_BINS"
+done
+
+./test.sh
+
+echo "windows binaries pass tests through wine!"
+
 fi
