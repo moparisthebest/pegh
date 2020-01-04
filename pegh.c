@@ -25,6 +25,17 @@
 #include <limits.h>
 #include <errno.h>
 
+#ifdef _WIN32
+
+#include <windows.h>
+#include <io.h>
+#include <fcntl.h>
+
+#define STDIN  0
+#define STDOUT 1
+
+#endif
+
 /* default of OpenSSL for now... */
 #if !defined(PEGH_OPENSSL) && !defined(PEGH_LIBSODIUM)
 #define PEGH_OPENSSL 1
@@ -1234,6 +1245,13 @@ int main(int argc, char **argv)
             return exit_code;
         }
     }
+#ifdef _WIN32
+    else {
+        /* windows in/out is text and mangles certain bytes by default... */
+        setmode(STDIN, O_BINARY);
+    }
+#endif
+
     if(NULL != out_filename) {
         out = fopen(out_filename, append ? "ab" : "wb");
         if(!out) {
@@ -1243,6 +1261,13 @@ int main(int argc, char **argv)
             return exit_code;
         }
     }
+#ifdef _WIN32
+    else {
+        /* windows in/out is text and mangles certain bytes by default... */
+        setmode(STDOUT, O_BINARY);
+    }
+#endif
+
 
     if(decrypt)
         exit_code = pegh_decrypt(password, password_len, scrypt_max_mem, buffer_size, in, out, err);
