@@ -25,6 +25,14 @@
 #include <limits.h>
 #include <errno.h>
 
+#if !defined(_WIN32) && (_POSIX_C_SOURCE >= 1 || _XOPEN_SOURCE || _POSIX_SOURCE)
+#define USE_TERMIOS 1
+#endif
+
+#ifdef USE_TERMIOS
+#include <termios.h>
+#endif
+
 #ifdef _WIN32
 
 #include <windows.h>
@@ -75,6 +83,8 @@ const uint32_t DEFAULT_CHUNK_SIZE_MB = 32;
  * to allow old archives to be decrypted with shorter passwords
  */
 const size_t MINIMUM_PASSWORD_LEN = 12;
+/* technically they can only enter at most 2 less than this */
+const size_t MANUAL_ENTRY_PASSWORD_MAX_LEN = 66;
 
 /*
  * pegh file format, numbers are inclusive 0-based byte array indices
@@ -975,6 +985,10 @@ usage: pegh [options...] password\n\
                default: %d\n", CHUNK_SIZE_MAX_GCM / 1024 / 1024, CHUNK_SIZE_MAX_CHACHA / 1024 / 1024, DEFAULT_CHUNK_SIZE_MB, SCRYPT_MAX_MEM / 1024 / 1024);
     fprintf(stderr, "\
  -f <filename> read password from file instead of argument, - means stdin\n\
+ -g            prompt for password, confirm on encryption, max characters: %lu\n",
+        MANUAL_ENTRY_PASSWORD_MAX_LEN - 2
+    );
+    fprintf(stderr, "\
  -N <num>      scrypt parameter N, only applies for encryption, default %d\n\
                this is rounded up to the next highest power of 2\n\
  -r <num>      scrypt parameter r, only applies for encryption, default %d\n\
@@ -1062,6 +1076,12 @@ char* read_file_fully(const char *in_filename, size_t *file_len) {
             return NULL;
         }
     }
+#ifdef _WIN32
+    else {
+        /* windows in/out is text and mangles certain bytes by default... */
+        setmode(STDIN, O_BINARY);
+    }
+#endif
 
     contents = malloc(total_size);
     if(!contents) {
@@ -1103,10 +1123,143 @@ char* read_file_fully(const char *in_filename, size_t *file_len) {
     return contents;
 }
 
+/* returns -1 on error, or 0+ for length of string read into buff */
+int read_passwd(char *prompt, char *buff, int buff_len, FILE *in, FILE *out)
+{
+    int pass_len;
+
+    /*
+     * Turn echoing off and fail if we can’t.
+     * we support POSIX and Windows here
+     */
+#ifdef USE_TERMIOS
+    struct termios orig_input_flags, new_input_flags;
+
+    if (tcgetattr (fileno (in), &orig_input_flags) != 0)
+        return -1;
+    new_input_flags = orig_input_flags;
+    new_input_flags.c_lflag &= (tcflag_t) ~ECHO;
+    if (tcsetattr (fileno (in), TCSAFLUSH, &new_input_flags) != 0)
+        return -1;
+#endif
+#ifdef _WIN32
+    HANDLE hStdin;
+    DWORD orig_input_flags;
+
+    hStdin = GetStdHandle(STD_INPUT_HANDLE);
+    if (hStdin == INVALID_HANDLE_VALUE)
+        return -1;
+
+    /* Save the current input mode, to be restored on exit. */
+    if (! GetConsoleMode(hStdin, &orig_input_flags) )
+        return -1;
+
+    if (! SetConsoleMode(hStdin, orig_input_flags & (DWORD) ~ENABLE_ECHO_INPUT) )
+        return -1;
+#endif
+
+    /* Display the prompt */
+    fprintf(out, "%s", prompt);
+
+    /* Read the password. cast is safe because buff_len is int */
+    pass_len = fgets (buff, buff_len, in) == NULL ? 0 : (int) strlen(buff);
+
+    /* Remove the line feed */
+    if (pass_len >= 1 && buff[pass_len - 1] == '\n') {
+        buff[--pass_len] = 0;
+    }
+    /* Remove the carriage return */
+    if (pass_len >= 1 && buff[pass_len - 1] == '\r') {
+        buff[--pass_len] = 0;
+    }
+
+    /* Restore terminal. we could check failure here but if it failed, what could we do? */
+#ifdef USE_TERMIOS
+    tcsetattr (fileno (in), TCSAFLUSH, &orig_input_flags);
+    fprintf(out, "\n"); /* windows does this automatically */
+#endif
+#ifdef _WIN32
+    SetConsoleMode(hStdin, orig_input_flags);
+#endif
+
+    return pass_len;
+}
+
+/* returns -1 on error, or 0+ for length of string read into buff */
+int read_passwd_console(char *prompt, char *buff, int buff_len) {
+    int pass_len;
+    FILE *in;
+#ifdef _WIN32
+    in = fopen("CONIN$", "r+");
+    /* this *should* work here but does not, just using stderr for now
+    out = fopen("CONOUT$", "w");
+    */
+    if(in) {
+        pass_len = read_passwd(prompt, buff, buff_len, in, stderr);
+        fclose(in);
+        return pass_len;
+    }
+#else
+    in = fopen("/dev/tty", "r+");
+    if(in) {
+        pass_len = read_passwd(prompt, buff, buff_len, in, in);
+        fclose(in);
+        return pass_len;
+    }
+#endif
+    /* oh well, we tried */
+    return read_passwd(prompt, buff, buff_len, stdin, stderr);
+}
+
+/* returns -1 on error, or 0+ for length of string read into buff */
+int read_passwd_console_confirm(char *buff, int buff_len, int min_passwd_length) {
+    int pass_len, confirm_len;
+    char *confirm_passwd;
+
+    confirm_passwd = malloc((size_t) buff_len);
+    if(!confirm_passwd)
+        return -1;
+
+    while(1) {
+        pass_len = read_passwd_console("Enter encryption password: ", buff, buff_len);
+        if(-1 == pass_len)
+            break; /* fail */
+        if(pass_len < min_passwd_length) {
+            fprintf(stderr, "Error: Minimum password length is %d but was only %d, try again...\n", min_passwd_length, pass_len);
+            continue;
+        }
+        if(pass_len == (buff_len - 1)) {
+            fprintf(stderr, "Error: Maximum password length for manual entry (%d) exceeded, try again...\n", buff_len - 2);
+            continue;
+        }
+
+        confirm_len = read_passwd_console("Confirm password: ", confirm_passwd, buff_len);
+        if(-1 == confirm_len)
+            break; /* fail */
+        if(pass_len == confirm_len && strcmp(buff, confirm_passwd) == 0)
+            break; /* finally success! */
+
+        fprintf(stderr, "Error: Entered passwords do not match, try again...\n");
+    }
+
+    /* wipe confirm password */
+    wipe_memory(confirm_passwd, (size_t) buff_len);
+    if(pass_len == -1 || pass_len == 0) {
+        /* wipe entire password buffer */
+        wipe_memory(buff, (size_t) buff_len);
+    } else {
+        /* wipe the unused portion of the read password too, in case some secrets exist there */
+        wipe_memory(buff + (pass_len + 1), (size_t) (buff_len - pass_len - 1));
+    }
+
+    free(confirm_passwd);
+    return pass_len;
+}
+
 /* returns 0 on success, 1 on cryptography failure, 19 on "libsodium only and CPU does not support AES" error, 2 on other failure */
 int main(int argc, char **argv)
 {
-    int optind, decrypt = 0, append = 0, exit_code = 2, version = -1;
+    int optind, decrypt = 0, append = 0, passwd_prompt = 0, exit_code = 2, version = -1;
     char *password = NULL;
     uint32_t N = SCRYPT_N, scrypt_max_mem = SCRYPT_MAX_MEM, buffer_size = DEFAULT_CHUNK_SIZE_MB * 1024 * 1024, scale = 1;
     uint8_t r = SCRYPT_R, p = SCRYPT_P;
@@ -1149,6 +1302,9 @@ int main(int argc, char **argv)
                 break;
             case 'f':
                 password = read_file_fully(parse_filename_arg(++optind, argc, argv), &password_len);
+                break;
+            case 'g':
+                passwd_prompt = 1;
                 break;
             case 'c':
                 buffer_size = parse_int_arg(++optind, argc, argv) * 1024 * 1024;
@@ -1210,17 +1366,40 @@ int main(int argc, char **argv)
     }
 
     if(password == NULL) {
-        if(argc == optind) {
-            fprintf (stderr, "Error: no password provided\n");
-            return help(exit_code);
-        }
+        if(passwd_prompt) {
+            password = malloc(MANUAL_ENTRY_PASSWORD_MAX_LEN);
+            if(!password) {
+                fprintf (stderr, "Error: cannot allocate memory to prompt for password\n");
+                return exit_code;
+            }
+            if(decrypt) {
+                /* for decryption, we just read the password once, maybe print a warning, try to decrypt */
+                optind = read_passwd_console("Enter decryption password: ", password, MANUAL_ENTRY_PASSWORD_MAX_LEN);
+                if(optind == (MANUAL_ENTRY_PASSWORD_MAX_LEN - 1)) {
+                    /* possibly truncated */
+                    fprintf (stderr, "Warning: read maximum characters (%d) for password, possibly truncated, attempting decryption anyway...!\n", optind);
+                }
+            } else {
+                optind = read_passwd_console_confirm(password, MANUAL_ENTRY_PASSWORD_MAX_LEN, MINIMUM_PASSWORD_LEN);
+            }
+            if(optind == -1) {
+                fprintf (stderr, "Error: cannot prompt user for password!\n");
+                return exit_code;
+            }
+            password_len = (size_t) optind;
+        } else {
+            if(argc == optind) {
+                fprintf (stderr, "Error: no password provided\n");
+                return help(exit_code);
+            }
 
-        if((argc - optind) != 1) {
-            fprintf (stderr, "Error: more than one password provided\n");
-            return help(exit_code);
+            if((argc - optind) != 1) {
+                fprintf (stderr, "Error: more than one password provided\n");
+                return help(exit_code);
+            }
+            password = argv[optind];
+            password_len = strlen(password);
         }
-        password = argv[optind];
-        password_len = strlen(password);
     }
 
     if(0 == decrypt && password_len < MINIMUM_PASSWORD_LEN) {

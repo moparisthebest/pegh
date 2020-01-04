@@ -78,6 +78,7 @@ usage: pegh [options...] password
                almost linearly scale with -N, if too low operation will fail,
                default: 64
  -f <filename> read password from file instead of argument, - means stdin
+ -g            prompt for password, confirm on encryption, max characters: 64
  -N <num>      scrypt parameter N, only applies for encryption, default 32768
                this is rounded up to the next highest power of 2
  -r <num>      scrypt parameter r, only applies for encryption, default 8

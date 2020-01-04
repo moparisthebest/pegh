@@ -8,6 +8,11 @@ CFLAGS += -Wall -Wextra -Werror -std=c89 -pedantic \
        -Wno-missing-prototypes -Wno-missing-noreturn -Wno-format \
        -O3
 
+# for now we want termios used by default unless explicitly disabled
+ifndef NO_TERMIOS
+CFLAGS += -D_POSIX_SOURCE
+endif
+
 # build or grab from https://curl.haxx.se/windows/
 ifdef PEGH_OPENSSL_WIN
 
