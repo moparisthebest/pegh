@@ -62,13 +62,13 @@ if [ "$ARCH" == "i386" ]
 then
 
 make CC=i686-w64-mingw32-cc PEGH_LIBSODIUM_WIN="${STATIC_LIB_DIR}/libsodium-win32" clean all
-mv pegh.exe pegh-i386-libsodium.exe
+mv pegh.exe pegh-windows-i386-libsodium.exe
 
 make CC=i686-w64-mingw32-cc PEGH_OPENSSL_WIN="${STATIC_LIB_DIR}/openssl-1.1.1d-win32-mingw" clean all
-mv pegh.exe pegh-i386-openssl.exe
+mv pegh.exe pegh-windows-i386-openssl.exe
 
 make CC=i686-w64-mingw32-cc PEGH_OPENSSL_WIN="${STATIC_LIB_DIR}/openssl-1.1.1d-win32-mingw" PEGH_LIBSODIUM_WIN="${STATIC_LIB_DIR}/libsodium-win32" clean all
-mv pegh.exe pegh-i386-libsodium-openssl.exe
+mv pegh.exe pegh-windows-i386-libsodium-openssl.exe
 
 fi
 
@@ -80,13 +80,13 @@ then
 export wine="wine64"
 
 make CC=x86_64-w64-mingw32-cc PEGH_LIBSODIUM_WIN="${STATIC_LIB_DIR}/libsodium-win64" clean all
-mv pegh.exe pegh-amd64-libsodium.exe
+mv pegh.exe pegh-windows-amd64-libsodium.exe
 
 make CC=x86_64-w64-mingw32-cc PEGH_OPENSSL_WIN="${STATIC_LIB_DIR}/openssl-1.1.1d-win64-mingw" clean all
-mv pegh.exe pegh-amd64-openssl.exe
+mv pegh.exe pegh-windows-amd64-openssl.exe
 
 make CC=x86_64-w64-mingw32-cc PEGH_OPENSSL_WIN="${STATIC_LIB_DIR}/openssl-1.1.1d-win64-mingw" PEGH_LIBSODIUM_WIN="${STATIC_LIB_DIR}/libsodium-win64" clean all
-mv pegh.exe pegh-amd64-libsodium-openssl.exe
+mv pegh.exe pegh-windows-amd64-libsodium-openssl.exe
 
 fi
 

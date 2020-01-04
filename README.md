@@ -7,7 +7,7 @@ pegh is a file encryption tool using passwords with modern, standardized, and au
 
 [pegh](http://klingonska.org/dict/?q=tlh%3Apegh) is Klingon for secret
 
-This implementation is built in C and can link with OpenSSL, libsodium, *or* libsodium AND OpenSSL in which case it falls back to OpenSSL's software AES implementation if the CPU does not support libsodium's.  Every commit is built and tested in every combination and currently on 3 different architectures on Linux.  The code aims to be fully portable C that should compile on anything with a C89 compiler (depending on crypto backend chosen).
+This implementation is built in C and can link with OpenSSL, libsodium, *or* libsodium AND OpenSSL in which case it falls back to OpenSSL's software AES implementation if the CPU does not support libsodium's.  Every commit is built and tested in every combination and currently on 3 different architectures on Linux and 2 on Windows.  The code aims to be fully portable C that should compile on anything with a C89 compiler (depending on crypto backend chosen).
 
 Releases
 --------
@@ -18,11 +18,11 @@ Releases
   * Windows amd64, i386
   * more to come?
 
-what do the names mean?
+what do the names mean? where `$OS` is your Operating System and `$ARCH` is your CPU architecture:
 
-  * `pegh-$ARCH-openssl`             - supports AES-256-GCM and Chacha20-Poly1305 on all CPUs
-  * `pegh-$ARCH-libsodium`           - supports Chacha20-Poly1305 on all CPUs, but AES-256-GCM only on CPUs with hardware support for aes-ni
-  * `pegh-$ARCH-libsodium-openssl`   - supports AES-256-GCM and Chacha20-Poly1305 on all CPUs, uses libsodium for everything if possible, but OpenSSL's software AES implementation if the CPU does not support aes-ni
+  * `pegh-$OS-$ARCH-openssl`             - supports AES-256-GCM and Chacha20-Poly1305 on all CPUs
+  * `pegh-$OS-$ARCH-libsodium`           - supports Chacha20-Poly1305 on all CPUs, but AES-256-GCM only on CPUs with hardware support for aes-ni
+  * `pegh-$OS-$ARCH-libsodium-openssl`   - supports AES-256-GCM and Chacha20-Poly1305 on all CPUs, uses libsodium for everything if possible, but OpenSSL's software AES implementation if the CPU does not support aes-ni
 
 Usage
 -----

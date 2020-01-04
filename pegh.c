@@ -115,7 +115,7 @@ const size_t MANUAL_ENTRY_PASSWORD_MAX_LEN = 66;
 
 /* don't touch below here unless you know what you are doing */
 
-#define PEGH_VERSION "1.0.0"
+#define PEGH_VERSION "0.9.3"
 
 /* 256 bit key required for AES-256 */
 #define KEY_LEN 32
