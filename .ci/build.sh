@@ -95,6 +95,9 @@ strip *.exe
 ls -lah *.exe
 file *.exe
 
+# running the test script sometimes locks up wine, I think due to races on creating ~/.wine, so do that first...
+$wine ./pegh-windows-amd64-libsodium.exe -h || true
+
 # now test windows binaries against the static ones with wine
 # no binfmt here where executing .exe *just works*, so do it hacky way :'(
 export TEST_BINS="./pegh.static.openssl ./pegh.static.libsodium-openssl ./pegh.static.libsodium"
