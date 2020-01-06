@@ -48,7 +48,7 @@ LIBSODIUM_VERSION=1.0.18
 
 curl -O https://download.libsodium.org/libsodium/releases/libsodium-${LIBSODIUM_VERSION}-stable-mingw.tar.gz -O https://curl.haxx.se/windows/dl-7.67.0_5/openssl-1.1.1d_5-win64-mingw.zip -O https://curl.haxx.se/windows/dl-7.67.0_5/openssl-1.1.1d_5-win32-mingw.zip
 
-echo "df9c5df0355ddd423350471f37d2a595b9b1be228a787f4ed8109c208d9e2655  libsodium-${LIBSODIUM_VERSION}-stable-mingw.tar.gz" > libs.sha256
+echo "241d6c88c2d79e13dae9f4943804a5a855c7d2904b21f74ebd31b15d056e3a4f  libsodium-${LIBSODIUM_VERSION}-stable-mingw.tar.gz" > libs.sha256
 echo '4f474918a1597d6d1d35e524cf79827623f8ce511259b0047ee95bc0fddbf29c  openssl-1.1.1d_5-win32-mingw.zip' >> libs.sha256
 echo '936260c5a865c8e3f6af35a5394dd1acc43063a40a206c717350f1a341d8d822  openssl-1.1.1d_5-win64-mingw.zip' >> libs.sha256
 
