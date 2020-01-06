@@ -18,10 +18,17 @@ mv "$BUILD_DIR"pegh.static.libsodium-openssl "./pegh-linux-$ARCH-libsodium-opens
 
 mv "$BUILD_DIR"pegh-*.exe ./
 
+sha256sum pegh-* > pegh-$ARCH-sha256sum.txt
+
+if [ "$ARCH" == "amd64" ]
+then
+
 git archive HEAD -9 --format zip -o pegh-source.zip
 git archive HEAD -9 --format tar.gz -o pegh-source.tar.gz
 
-sha256sum pegh-* > pegh-sha256sum.txt
+sha256sum pegh-source.*  > pegh-source-sha256sum.txt
+
+fi
 
 rm -rf "$BUILD_DIR" 2>/dev/null
 
