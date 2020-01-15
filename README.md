@@ -24,6 +24,8 @@ what do the names mean? where `$OS` is your Operating System and `$ARCH` is your
   * `pegh-$OS-$ARCH-libsodium`           - supports Chacha20-Poly1305 on all CPUs, but AES-256-GCM only on CPUs with hardware support for aes-ni
   * `pegh-$OS-$ARCH-libsodium-openssl`   - supports AES-256-GCM and Chacha20-Poly1305 on all CPUs, uses libsodium for everything if possible, but OpenSSL's software AES implementation if the CPU does not support aes-ni
 
+Arch Linux [AUR](https://aur.archlinux.org/packages/pegh/) package
+
 Usage
 -----
 
