@@ -67,9 +67,10 @@ test () {
     echo 'encrypting then decrypting with the same key should succeed'
     "$bin" -e "$@" "$key" < "$dummy_file" | "$bin_decrypt" -d "$key" | cmp - "$dummy_file"
 
-    echo 'test with -s 32 requiring 2gb of ram should succeed'
+    # this test is so (rightly) slow it makes our CI builds take 6+ hours, disable for now
+    #echo 'test with -s 32 requiring 2gb of ram should succeed'
     # can send -s 32 or -m 2048 to decrypt command with identical effect
-    "$bin" -e "$@" "$key" -s 32 < "$dummy_file" | "$bin_decrypt" -d "$key" -m 2048 | cmp - "$dummy_file"
+    #"$bin" -e "$@" "$key" -s 32 < "$dummy_file" | "$bin_decrypt" -d "$key" -m 2048 | cmp - "$dummy_file"
 
     echo 'encrypting/decrypting with key in file should work, even when key has leading 0s and a trailing newline'
     "$bin" -e "$@" -f "$leading_zero_key" < "$dummy_file" | "$bin_decrypt" -d -f "$leading_zero_key" | cmp - "$dummy_file"

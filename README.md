@@ -1,7 +1,7 @@
 pegh
 ----
 
-[![Travis-CI Build Status](https://api.travis-ci.com/moparisthebest/pegh.svg?branch=master)](https://travis-ci.com/moparisthebest/pegh)
+[![Build Status](https://ci.moparisthe.best/job/moparisthebest/job/pegh/job/master/badge/icon%3Fstyle=plastic)](https://ci.moparisthe.best/job/moparisthebest/job/pegh/job/master/)
 
 pegh is a file encryption tool using passwords with modern, standardized, and authenticated encryption. It is simple, secure, and returns proper exit codes so you can tell whether encryption or decryption failed or not.
 
@@ -14,7 +14,7 @@ Releases
 
 [Releases](https://github.com/moparisthebest/pegh/releases) contain static binaries for:
 
-  * Linux amd64, i386, aarch64
+  * Linux amd64, i386, aarch64, armv7, ppc64le
   * Windows amd64, i386
   * more to come?
 
