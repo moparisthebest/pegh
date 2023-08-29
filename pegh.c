@@ -70,21 +70,21 @@
  * https://tools.ietf.org/html/rfc7914#section-2
  * https://blog.filippo.io/the-scrypt-parameters/
  */
-const uint32_t SCRYPT_N = 32768;
-const uint8_t SCRYPT_R = 8;
-const uint8_t SCRYPT_P = 1;
-const size_t SCRYPT_MAX_MEM = 1024 * 1024 * 64; /* 64 megabytes */
+static const uint32_t SCRYPT_N = 32768;
+static const uint8_t SCRYPT_R = 8;
+static const uint8_t SCRYPT_P = 1;
+static const uint64_t SCRYPT_MAX_MEM = 1024 * 1024 * 64; /* 64 megabytes */
 
 /* memory use will be twice this */
-const uint32_t DEFAULT_CHUNK_SIZE_MB = 32;
+static const uint32_t DEFAULT_CHUNK_SIZE_MB = 32;
 
 /*
  * this should be increased regularly, and only checked on encryption
  * to allow old archives to be decrypted with shorter passwords
  */
-const size_t MINIMUM_PASSWORD_LEN = 12;
+static const size_t MINIMUM_PASSWORD_LEN = 12;
 /* technically they can only enter at most 2 less than this */
-const size_t MANUAL_ENTRY_PASSWORD_MAX_LEN = 66;
+static const size_t MANUAL_ENTRY_PASSWORD_MAX_LEN = 66;
 
 /*
  * pegh file format, numbers are inclusive 0-based byte array indices
@@ -121,12 +121,12 @@ const size_t MANUAL_ENTRY_PASSWORD_MAX_LEN = 66;
 #define KEY_LEN 32
 
 /* 1 for file format version, 4 for N, 1 for r, 1 for p, 4 for block/buffer size */
-const size_t PRE_SALT_LEN = 11;
+static const size_t PRE_SALT_LEN = 11;
 /* from libsodium's crypto_pwhash_scryptsalsa208sha256_SALTBYTES */
 #define SALT_LEN 32
 /* AES-GCM/Chacha20-Poly1305 should only ever have an IV_LEN of 12 */
 #define IV_LEN 12
-const size_t AEAD_TAG_LEN = 16;
+static const size_t AEAD_TAG_LEN = 16;
 
 /* libsodium only supports AES on specific platforms, this jazz is to fallback to openssl impls in those cases */
 typedef int (*aead_func)(const unsigned char *, const size_t,
@@ -379,14 +379,14 @@ int chacha_decrypt(const unsigned char *ciphertext, const size_t ciphertext_len,
 
 /* returns 1 on success, 0 on error */
 int scrypt_derive_key(char *password, const size_t password_len,
-         uint32_t scrypt_max_mem, uint32_t N,
+         uint64_t scrypt_max_mem, uint32_t N,
          uint8_t r, uint8_t p, unsigned char *salt, unsigned char *key, FILE *err) {
     /* derive key using salt, password, and scrypt parameters */
     if (EVP_PBE_scrypt(
         password, password_len,
         salt, SALT_LEN,
         (uint64_t) N, (uint64_t) r, (uint64_t) p,
-        (uint64_t) scrypt_max_mem,
+        scrypt_max_mem,
         key, KEY_LEN
     ) <= 0) {
         if(NULL != err) {
@@ -545,7 +545,7 @@ int chacha_decrypt(const unsigned char *ciphertext, const size_t ciphertext_len,
 
 /* returns 1 on success, 0 on error */
 int scrypt_derive_key(char *password, const size_t password_len,
-         uint32_t scrypt_max_mem, uint32_t N,
+         uint64_t scrypt_max_mem, uint32_t N,
          uint8_t r, uint8_t p, unsigned char *salt, unsigned char *key, FILE *err) {
     size_t needed_memory;
     /* derive key using salt, password, and scrypt parameters */
@@ -822,7 +822,7 @@ void write_uint32_big_endian(uint32_t val, unsigned char *buf) {
 /* returns 1 on success, 0 on failure */
 int scrypt_derive_key_stream(const stream_func crypt_stream, const aead_func aead,
          char *password, const size_t password_len,
-         uint32_t scrypt_max_mem, size_t buffer_size,
+         uint64_t scrypt_max_mem, size_t buffer_size,
          FILE *in, FILE *out, FILE *err,
          uint32_t N, uint8_t r, uint8_t p, unsigned char *salt) {
     unsigned char key[KEY_LEN] = {0};
@@ -870,7 +870,7 @@ int check_version(uint8_t version, FILE *err) {
 
 /* returns 1 on success, 0 on failure */
 int pegh_encrypt(char *password, const size_t password_len,
-         uint32_t scrypt_max_mem, size_t buffer_size,
+         uint64_t scrypt_max_mem, size_t buffer_size,
          FILE *in, FILE *out, FILE *err,
          uint8_t version,
          uint32_t N, uint8_t r, uint8_t p)
@@ -909,7 +909,7 @@ int pegh_encrypt(char *password, const size_t password_len,
 
 /* returns 1 on success, 0 on failure */
 int pegh_decrypt(char *password, const size_t password_len,
-         uint32_t scrypt_max_mem, size_t max_buffer_size,
+         uint64_t scrypt_max_mem, size_t max_buffer_size,
          FILE *in, FILE *out, FILE *err)
 {
     unsigned char salt[SALT_LEN] = {0};
@@ -1013,7 +1013,7 @@ void help_exit(int exit_code) {
     exit(exit_code);
 }
 
-uint32_t parse_int_arg(int optind, int argc, char **argv) {
+uint64_t parse_u64_arg(int optind, int argc, char **argv) {
     uint64_t tmp = 0;
 
     if(optind >= argc) {
@@ -1028,15 +1028,27 @@ uint32_t parse_int_arg(int optind, int argc, char **argv) {
         help_exit(2);
         return 0;
     }
+    return tmp;
+}
+
+uint32_t parse_u32_arg(int optind, int argc, char **argv) {
+    uint64_t tmp;
+
+    tmp = parse_u64_arg(optind, argc, argv);
+    if(tmp > 4294967295UL) {
+        fprintf(stderr, "Error: %s %s failed to parse as a number 0-4294967295\n", argv[optind - 1], argv[optind]);
+        help_exit(2);
+        return 0;
+    }
     return (uint32_t) tmp;
 }
 
 uint8_t parse_byte_arg(int optind, int argc, char **argv) {
-    uint32_t tmp;
+    uint64_t tmp;
 
-    tmp = parse_int_arg(optind, argc, argv);
+    tmp = parse_u64_arg(optind, argc, argv);
     if(tmp > 255) {
-        fprintf(stderr, "Error: %s %s failed to parse as a number 1-255\n", argv[optind - 1], argv[optind]);
+        fprintf(stderr, "Error: %s %s failed to parse as a number 0-255\n", argv[optind - 1], argv[optind]);
         help_exit(2);
         return 0;
     }
@@ -1261,9 +1273,10 @@ int main(int argc, char **argv)
 {
     int optind, decrypt = 0, append = 0, passwd_prompt = 0, exit_code = 2, version = -1;
     char *password = NULL;
-    uint32_t N = SCRYPT_N, scrypt_max_mem = SCRYPT_MAX_MEM, buffer_size = DEFAULT_CHUNK_SIZE_MB * 1024 * 1024, scale = 1;
+    uint64_t scrypt_max_mem = SCRYPT_MAX_MEM;
+    uint32_t N = SCRYPT_N, buffer_size = DEFAULT_CHUNK_SIZE_MB * 1024 * 1024, scale = 1;
     uint8_t r = SCRYPT_R, p = SCRYPT_P;
-    size_t password_len;
+    size_t password_len = MINIMUM_PASSWORD_LEN;
 
     FILE *in = stdin, *out = stdout, *err = stderr;
     char *in_filename = NULL, *out_filename = NULL;
@@ -1307,16 +1320,16 @@ int main(int argc, char **argv)
                 passwd_prompt = 1;
                 break;
             case 'c':
-                buffer_size = parse_int_arg(++optind, argc, argv) * 1024 * 1024;
+                buffer_size = parse_u32_arg(++optind, argc, argv) * 1024 * 1024;
                 break;
             case 'm':
-                scrypt_max_mem = parse_int_arg(++optind, argc, argv) * 1024 * 1024;
+                scrypt_max_mem = parse_u64_arg(++optind, argc, argv) * 1024 * 1024;
                 break;
             case 'N':
-                N = next_highest_power_of_2(parse_int_arg(++optind, argc, argv));
+                N = next_highest_power_of_2(parse_u32_arg(++optind, argc, argv));
                 break;
             case 's':
-                scale = next_highest_power_of_2(parse_int_arg(++optind, argc, argv));
+                scale = next_highest_power_of_2(parse_u32_arg(++optind, argc, argv));
                 break;
             case 'r':
                 r = parse_byte_arg(++optind, argc, argv);
@@ -1412,7 +1425,7 @@ int main(int argc, char **argv)
     scrypt_max_mem *= scale;
 
     /*
-    fprintf (stderr, "decrypt = %d, key = %s, scrypt_max_mem = %d, N = %d, r = %d, p = %d, scale = %d\n",
+    fprintf (stderr, "decrypt = %d, key = %s, scrypt_max_mem = %llu, N = %lu, r = %u, p = %u, scale = %u\n",
             decrypt, password, scrypt_max_mem, N, r, p, scale);
     return 0;
     */
